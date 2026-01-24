@@ -3,6 +3,7 @@ import nltk
 import textstat
 from empath import Empath
 from collections import Counter
+import json
 
 # --- INITIALIZATION ---
 
