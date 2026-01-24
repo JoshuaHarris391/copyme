@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "copyme"
+version = "0.1.0"
+description = ""
+authors = []
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+spacy = ">=3.8.11"
+textstat = ">=0.7.12"
+empath = ">=0.41"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
