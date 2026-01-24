@@ -1,0 +1,656 @@
+import spacy
+import nltk
+import textstat
+from empath import Empath
+from collections import Counter
+
+# --- INITIALIZATION ---
+
+# 1. Load Spacy Model
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    print("Error: Spacy model not found. Run: python -m spacy download en_core_web_sm")
+    exit()
+
+# 2. Load NLTK Resources
+try:
+    from nltk.corpus import nps_chat
+    try:
+        chat_words = nps_chat.tagged_words()
+        NLTK_FILLERS = {word.lower() for word, tag in chat_words if tag == 'UH'}
+    except LookupError:
+        print("Warning: NLTK 'nps_chat' not found. Using fallback list.")
+        NLTK_FILLERS = set()
+except ImportError:
+    NLTK_FILLERS = set()
+
+FALLBACK_MARKERS = {
+    "so", "actually", "really", "okay", "well", "like", "basically", 
+    "literally", "totally", "honestly", "anyway", "you know", "i mean", "right",
+    "however", "moreover", "therefore", "thus", "hence", "furthermore"
+}
+DISCOURSE_MARKERS = NLTK_FILLERS.union(FALLBACK_MARKERS)
+
+lexicon = Empath()
+
+
+# --- UNIFIED ANALYZER CLASS ---
+
+class StyleAnalyser:
+    """
+    A class for performing comprehensive linguistic and stylistic analysis on text data.
+    
+    This class leverages SpaCy for NLP processing and Empath for semantic analysis to calculate
+    a variety of quantitative metrics (e.g., TTR, sentence length) and qualitative assessments
+    (e.g., rhetorical intent, genre alignment).
+    
+    Attributes:
+        text (str): The original input text.
+        doc (spacy.tokens.Doc): The processed SpaCy document object.
+        words (list[str]): A list of all non-punctuation, non-space tokens in the text.
+        sentences (list[spacy.tokens.Span]): A list of sentences derived from the text.
+        word_count (int): The total number of valid words.
+        sentence_count (int): The total number of sentences.
+        unique_words (set[str]): A set of unique words (case-insensitive) in the text.
+        empath_scores (dict): Semantic category scores from the Empath lexicon.
+        repeated_counts (Counter): Frequency counts of repeated n-grams (2-4 length).
+    """
+
+    def __init__(self, text):
+        """
+        Initializes the StyleAnalyser with input text.
+
+        Processing includes SpaCy tokenization, sentence segmentation, unique word extraction,
+        Empath semantic analysis, and n-gram repetition counting.
+
+        Args:
+            text (str): The raw text string to be analyzed.
+        """
+        self.text = text
+        self.doc = nlp(text)
+        self.words = [token.text for token in self.doc if not token.is_punct and not token.is_space]
+        self.sentences = list(self.doc.sents)
+        self.word_count = len(self.words)
+        self.sentence_count = len(self.sentences)
+        self.unique_words = set(w.lower() for w in self.words)
+        self.empath_scores = lexicon.analyze(text, normalize=True) or {}
+        self.repeated_counts = self._get_repeated_ngram_counts()
+
+    def _get_ngrams(self, n):
+        """
+        Generates a list of n-grams from the tokenized text.
+
+        Args:
+            n (int): The length of the n-gram (e.g., 2 for bigrams).
+
+        Returns:
+            list[str]: A list of n-gram strings in lowercase.
+        """
+        return [
+            " ".join(self.words[i:i + n]).lower()
+            for i in range(len(self.words) - n + 1)
+        ]
+
+    def _get_repeated_ngram_counts(self, n_range=None):
+        """
+        Identifies and counts n-grams that appear more than once in the text.
+
+        This is used primarily for calculating Formulaic Density.
+
+        Args:
+            n_range (list[int], optional): A list of n-gram lengths to check. 
+                Defaults to [2, 3, 4].
+
+        Returns:
+            Counter: A dictionary-like object mapping repeated n-gram strings 
+                to their frequency.
+        """
+        if n_range is None:
+            n_range = [2, 3, 4]
+        combined_counts = Counter()
+        for n in n_range:
+            ngrams = self._get_ngrams(n)
+            counts = Counter(ngrams)
+            for gram, count in counts.items():
+                if count > 1:
+                    combined_counts[gram] += count
+        return combined_counts
+
+
+    # --- QUANTITATIVE METRICS ---
+
+    def get_ttr(self):
+        """
+        Calculates the Type-Token Ratio (TTR).
+
+        TTR is a measure of lexical diversity, defined as the number of unique
+        word types divided by the total number of word tokens.
+
+        Returns:
+            float: The TTR value between 0.0 and 1.0 (rounded to 3 decimals).
+                   Returns 0.0 if the text is empty.
+        """
+        if self.word_count == 0:
+            return 0.0
+        return round(len(self.unique_words) / self.word_count, 3)
+
+    def assess_ttr(self, ttr):
+        """
+        Categorizes lexical diversity based on TTR value.
+
+        Args:
+            ttr (float): The Type-Token Ratio.
+
+        Returns:
+            str: One of "diverse" (>0.6), "standard" (>0.4), or "repetitive" (<=0.4).
+        """
+        if ttr > 0.6:
+            return "diverse"
+        elif ttr > 0.4:
+            return "standard"
+        return "repetitive"
+
+    def get_mls(self):
+        """
+        Calculates the Mean Length of Sentence (MLS).
+
+        Returns:
+            float: The average number of words per sentence (rounded to 2 decimals).
+                   Returns 0.0 if there are no sentences.
+        """
+        if self.sentence_count == 0:
+            return 0.0
+        return round(self.word_count / self.sentence_count, 2)
+
+    def assess_mls(self, mls):
+        """
+        Categorizes syntactic complexity based on sentence length.
+
+        Args:
+            mls (float): Mean Length of Sentence.
+
+        Returns:
+            str: One of "complex/elaborate" (>25), "standard" (>15),
+                 or "short/telegraphic" (<=15).
+        """
+        if mls > 25:
+            return "complex/elaborate"
+        elif mls > 15:
+            return "standard"
+        return "short/telegraphic"
+
+    def get_punctuation_density(self):
+        """
+        Calculates Punctuation Density per 1,000 words.
+
+        Returns:
+            float: The normalized frequency of punctuation marks per 1,000 words.
+        """
+        if self.word_count == 0:
+            return 0.0
+        punct_count = len([t for t in self.doc if t.is_punct])
+        return round((punct_count / self.word_count) * 1000, 2)
+
+    def assess_punctuation_density(self, density):
+        """
+        Categorizes structural pacing based on punctuation density.
+
+        Args:
+            density (float): Punctuation marks per 1,000 words.
+
+        Returns:
+            str: One of "heavily punctuated" (>150), "balanced" (>100),
+                 or "sparse" (<=100).
+        """
+        if density > 150:
+            return "heavily punctuated"
+        elif density > 100:
+            return "balanced"
+        return "sparse"
+
+    def get_flesch_reading_ease(self):
+        """
+        Calculates the Flesch Reading Ease score.
+
+        Uses the `textstat` library to compute the score based on sentence
+        length and syllables per word. Scale: 0-100 (where 100 is easiest
+        to read).
+
+        Returns:
+            float: The reading ease score (rounded to 1 decimal).
+        """
+        return round(textstat.flesch_reading_ease(self.text), 1)
+
+    def assess_flesch_reading_ease(self, score):
+        """
+        Interprets the Flesch Reading Ease score into difficulty levels.
+
+        Args:
+            score (float): The Flesch Reading Ease score.
+
+        Returns:
+            str: Difficulty category ranging from "very easy" to "very difficult/technical".
+        """
+        if score > 80:
+            return "very easy"
+        elif score > 60:
+            return "easy/standard"
+        elif score > 40:
+            return "difficult"
+        return "very difficult/technical"
+
+    def get_discourse_marker_density(self):
+        """
+        Calculates the density of conversational fillers (Discourse Markers).
+
+        Scans for words defined in the global `DISCOURSE_MARKERS` list (e.g., 'like', 'so', 'well')
+        and normalizes the count per 1,000 words.
+
+        Returns:
+            float: Markers per 1,000 words.
+        """
+        if self.word_count == 0:
+            return 0.0
+        dm_count = sum(1 for w in self.words if w.lower() in DISCOURSE_MARKERS)
+        return round((dm_count / self.word_count) * 1000, 2)
+
+    def assess_discourse_marker_density(self, density):
+        """
+        Assesses the formality level based on discourse marker usage.
+
+        Args:
+            density (float): Discourse markers per 1,000 words.
+
+        Returns:
+            str: One of "conversational" (>40), "natural" (>15),
+                 or "formal/polished" (<=15).
+        """
+        if density > 40:
+            return "conversational"
+        elif density > 15:
+            return "natural"
+        return "formal/polished"
+
+    def get_hapax_legomena_ratio(self):
+        """
+        Calculates the Hapax Legomena Ratio (uniqueness metric).
+
+        This is the ratio of words that appear exactly once (hapax legomena)
+        to the total count of *unique* words. High values indicate
+        descriptive richness.
+
+        Returns:
+            float: Ratio between 0.0 and 1.0.
+        """
+        total_unique = len(self.unique_words)
+        if total_unique == 0:
+            return 0.0
+        word_freqs = Counter(w.lower() for w in self.words)
+        hapax_count = sum(1 for count in word_freqs.values() if count == 1)
+        return round(hapax_count / total_unique, 3)
+
+    def assess_hapax_legomena_ratio(self, ratio):
+        """
+        Categorizes descriptive richness based on the Hapax Legomena Ratio.
+
+        Args:
+            ratio (float): The Hapax Legomena Ratio.
+
+        Returns:
+            str: One of "unique/creative" (>0.6), "rich" (>0.4),
+                 or "basic/repetitive" (<=0.4).
+        """
+        if ratio > 0.6:
+            return "unique/creative"
+        elif ratio > 0.4:
+            return "rich"
+        return "basic/repetitive"
+
+    def get_formulaic_density(self):
+        """
+        Calculates Formulaic Density based on repeated n-grams.
+
+        Measures the proportion of the total word count that is comprised of repeated
+        2-gram, 3-gram, or 4-gram sequences.
+
+        Returns:
+            float: A value between 0.0 and 1.0 representing the saturation of repeated phrases.
+        """
+        if self.word_count == 0:
+            return 0.0
+        total_repeated = sum(self.repeated_counts.values())
+        return round(min(total_repeated / self.word_count, 1.0), 3)
+
+    def assess_formulaic_density(self, density):
+        """
+        Assesses reliance on stock phrases or clichés.
+
+        Args:
+            density (float): Formulaic Density score.
+
+        Returns:
+            str: One of "highly formulaic" (>0.3), "standard" (>0.1),
+                 or "original" (<=0.1).
+        """
+        if density > 0.3:
+            return "highly formulaic"
+        elif density > 0.1:
+            return "standard"
+        return "original"
+
+    def get_modal_ratio(self):
+        """
+        Calculates the Modal Hedging Ratio.
+
+        Determines the frequency of hedging/uncertainty markers (e.g.,
+        'could', 'might', 'seems') per sentence.
+
+        Returns:
+            float: Average number of hedging terms per sentence (capped at 1.0).
+        """
+        hedges = {
+            "can", "could", "may", "might", "would", "should",
+            "possibly", "probably", "likely", "maybe", "seems", "appear",
+            "suggests"
+        }
+        hedge_count = sum(
+            1 for t in self.doc
+            if t.text.lower() in hedges or t.lemma_.lower() in hedges
+        )
+        if self.sentence_count == 0:
+            return 0.0
+        return round(min(hedge_count / self.sentence_count, 1.0), 2)
+
+    def assess_modal_ratio(self, ratio):
+        """
+        Interprets the author's level of certainty or tentativeness.
+
+        Args:
+            ratio (float): Modal Hedging Ratio.
+
+        Returns:
+            str: One of "tentative/hedged" (>0.2), "balanced" (>0.05),
+                 or "assertive/direct" (<=0.05).
+        """
+        if ratio > 0.2:
+            return "tentative/hedged"
+        elif ratio > 0.05:
+            return "balanced"
+        return "assertive/direct"
+
+    def get_function_word_frequencies(self):
+        """
+        Calculates the relative frequency of specific Part-of-Speech (POS) tags.
+
+        Focuses on function words (Prepositions, Conjunctions, Pronouns,
+        Determiners), which are useful for stylistic fingerprinting.
+
+        Returns:
+            dict: Keys are POS categories (e.g., "prepositions"), values are
+                ratios (0.0-1.0).
+        """
+        pos_counts = Counter(token.pos_ for token in self.doc)
+        total = sum(pos_counts.values()) or 1
+
+        def get_pos_ratio(target_pos_list):
+            count = sum(pos_counts.get(pos, 0) for pos in target_pos_list)
+            return round(count / total, 3)
+
+        return {
+            "prepositions": get_pos_ratio(["ADP"]),
+            "conjunctions": get_pos_ratio(["CCONJ", "SCONJ"]),
+            "pronouns": get_pos_ratio(["PRON"]),
+            "determiners": get_pos_ratio(["DET"])
+        }
+
+
+    # --- WORDS DATA ---
+
+
+    def get_common_vocabulary(self, n=10):
+        """
+        Retrieves the most frequently used words in the text.
+
+        Args:
+            n (int): The number of top words to return. Defaults to 10.
+
+        Returns:
+            list[str]: A list of the `n` most common words.
+        """
+        word_freqs = Counter(w.lower() for w in self.words)
+        return [word for word, count in word_freqs.most_common(n)]
+
+    def get_frequent_phrases(self, n=10):
+        """
+        Retrieves the most frequently occurring n-gram phrases.
+
+        Args:
+            n (int): The number of top phrases to return. Defaults to 10.
+
+        Returns:
+            list[str]: A list of the `n` most common repeated phrases.
+        """
+        return [phrase for phrase, count in self.repeated_counts.most_common(n)]
+
+
+    # --- QUALITATIVE ANALYZER ---
+
+
+    def get_lexical_sophistication(self):
+        """
+        Assesses vocabulary difficulty based on word length.
+
+        Calculates the ratio of "long words" (length > 6 characters) to total
+        words.
+
+        Returns:
+            str: Interpretation of sophistication level ("basic",
+                 "intermediate", "advanced", or "specialized/technical").
+        """
+        if not self.words:
+            return "basic"
+        long_words = [w for w in self.words if len(w) > 6]
+        ratio = len(long_words) / self.word_count
+
+        if ratio > 0.3:
+            return "specialized/technical"
+        elif ratio > 0.2:
+            return "advanced"
+        elif ratio > 0.12:
+            return "intermediate"
+        return "basic"
+
+    def get_syntactic_variety(self):
+        """
+        Evaluates the variation in sentence structures.
+
+        Uses the standard deviation of sentence lengths as a proxy for
+        structural variety. High deviation implies a mix of short and
+        long sentences.
+
+        Returns:
+            str: Variety classification ("repetitive", "standard", "varied",
+                 or "complex").
+        """
+        if not self.sentences:
+            return "repetitive"
+        sent_lengths = [
+            len([t for t in s if not t.is_punct]) for s in self.sentences
+        ]
+        if not sent_lengths:
+            return "repetitive"
+
+        mean_len = sum(sent_lengths) / len(sent_lengths)
+        variance = sum(
+            (x - mean_len) ** 2 for x in sent_lengths
+        ) / len(sent_lengths)
+        std_dev = variance ** 0.5
+
+        if std_dev > 10:
+            return "complex"
+        elif std_dev > 6:
+            return "varied"
+        elif std_dev > 3:
+            return "standard"
+        return "repetitive"
+
+    def get_cohesive_harmony(self):
+        """
+        Measures the flow and connectivity between sentences (Cohesive Harmony).
+
+        Analyzes overlap of nouns and proper nouns between adjacent sentences.
+        A high overlap indicates strong threading of subjects/objects through
+        the text.
+
+        Returns:
+            str: Integration level ("fragmented", "loose", "coherent",
+                 or "highly_integrated").
+        """
+        if self.sentence_count <= 1:
+            return "coherent"
+        overlaps = 0
+        for i in range(1, self.sentence_count):
+            prev_nouns = {
+                t.lemma_ for t in self.sentences[i - 1]
+                if t.pos_ in ["NOUN", "PROPN"]
+            }
+            curr_nouns = {
+                t.lemma_ for t in self.sentences[i]
+                if t.pos_ in ["NOUN", "PROPN"]
+            }
+            if not prev_nouns.isdisjoint(curr_nouns):
+                overlaps += 1
+
+        score = overlaps / (self.sentence_count - 1)
+        if score > 0.7:
+            return "highly_integrated"
+        elif score > 0.5:
+            return "coherent"
+        elif score > 0.25:
+            return "loose"
+        return "fragmented"
+
+    def get_rhetorical_intent(self):
+        """
+        Determines the primary communicative purpose of the text.
+
+        Uses Empath semantic scoring to detect dominant themes (e.g., 'help' for persuasion,
+        'science' for exposition).
+
+        Returns:
+            str: The detected intent (e.g., "persuasive", "narrative", "informative").
+        """
+        scores = self.empath_scores
+        if scores.get('help', 0) > 0.02 or scores.get('negotiate', 0) > 0.02:
+            return "persuasive"
+        elif scores.get('science', 0) > 0.02 or scores.get('school', 0) > 0.02:
+            return "expository"
+        elif scores.get('emotional', 0) > 0.02 or scores.get('negative_emotion', 0) > 0.02:
+            return "narrative"
+        elif scores.get('appearance', 0) > 0.02 or scores.get('art', 0) > 0.02:
+            return "descriptive"
+        elif scores.get('tool', 0) > 0.02 or scores.get('work', 0) > 0.02:
+            return "instructional"
+        return "informative"
+
+    def get_genre_alignment(self, intent):
+        """
+        Classifies the text into a likely genre based on other metrics.
+
+        Combines Flesch Reading Ease scores, Empath semantic topics, and 
+        Rhetorical Intent to map the text to a standard genre (e.g., Academic, 
+        Legal, Journalistic).
+
+        Args:
+            intent (str): The previously calculated rhetorical intent.
+
+        Returns:
+            str: The predicted genre alignment.
+        """
+        readability = textstat.flesch_reading_ease(self.text)
+        scores = self.empath_scores
+
+        if readability < 40 and (
+            scores.get('law', 0) > 0.01 or scores.get('government', 0) > 0.01
+        ):
+            return "legal"
+        elif readability < 50 and scores.get('science', 0) > 0.02:
+            return "academic"
+        elif readability > 60 and intent == "narrative":
+            return "literary_fiction"
+        elif (
+            scores.get('computer', 0) > 0.02 or scores.get('technology', 0) > 0.02
+        ):
+            return "technical_manual"
+        elif intent == "persuasive" or scores.get('speaking', 0) > 0.02:
+            return "conversational_speech"
+        elif 40 < readability < 60 and intent == "informative":
+            return "journalistic"
+        return "conversational_speech"
+
+
+
+# --- MAIN ANALYSIS FUNCTION ---
+
+def analyze_linguistic_style(text):
+    analyzer = StyleAnalyser(text)
+    
+    # Calculate Quantitative Values
+    ttr = analyzer.get_ttr()
+    mls = analyzer.get_mls()
+    punct_density = analyzer.get_punctuation_density()
+    dm_density = analyzer.get_discourse_marker_density()
+    hapax = analyzer.get_hapax_legomena_ratio()
+    formulaic = analyzer.get_formulaic_density()
+    modal = analyzer.get_modal_ratio()
+    readability = analyzer.get_flesch_reading_ease()
+    
+    # Calculate Intent for alignment
+    intent = analyzer.get_rhetorical_intent()
+    
+    return {
+        "quantitative": {
+            "type_token_ratio": ttr,
+            "mean_length_of_sentence": mls,
+            "punctuation_density": punct_density,
+            "discourse_marker_density": dm_density,
+            "hapax_legomena_ratio": hapax,
+            "formulaic_density": formulaic,
+            "modal_hedging_ratio": modal,
+            "flesch_reading_ease": readability,
+            "function_word_frequency": analyzer.get_function_word_frequencies()
+        },
+        "qualitative": {
+            "type_token_ratio_assessment":
+                analyzer.assess_ttr(ttr),
+            "mean_length_of_sentence_assessment":
+                analyzer.assess_mls(mls),
+            "punctuation_density_assessment":
+                analyzer.assess_punctuation_density(punct_density),
+            "discourse_marker_density_assessment":
+                analyzer.assess_discourse_marker_density(dm_density),
+            "hapax_legomena_ratio_assessment":
+                analyzer.assess_hapax_legomena_ratio(hapax),
+            "formulaic_density_assessment":
+                analyzer.assess_formulaic_density(formulaic),
+            "modal_hedging_ratio_assessment":
+                analyzer.assess_modal_ratio(modal),
+            "flesch_reading_ease_assessment":
+                analyzer.assess_flesch_reading_ease(readability),
+            "lexical_sophistication":
+                analyzer.get_lexical_sophistication(),
+            "syntactic_variety":
+                analyzer.get_syntactic_variety(),
+            "cohesive_harmony":
+                analyzer.get_cohesive_harmony(),
+            "rhetorical_intent":
+                intent,
+            "genre_alignment":
+                analyzer.get_genre_alignment(intent)
+        },
+        "words": {
+            "common_vocabulary": analyzer.get_common_vocabulary(),
+            "frequent_phrases": analyzer.get_frequent_phrases()
+        }
+    }
