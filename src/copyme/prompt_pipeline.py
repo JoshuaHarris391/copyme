@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import anthropic
@@ -588,12 +589,15 @@ This is approximately what the user's writing sounds like. Match this register:
 
 1. NEVER default to your own polished, formal AI writing style.
 2. ALWAYS prioritise the user's measured style over what "sounds good" to you.
-3. The intensity multipliers tell you HOW MUCH — follow them precisely.
+3. The intensity multipliers tell you HOW MUCH -- follow them precisely.
 4. If the user's style is conversational, your output must be conversational.
 5. If the user hedges, you hedge. If they're direct, you're direct.
 6. Use their vocabulary and phrases as naturally as they would.
 7. The content must still be helpful, accurate, and responsive to the request \
-— but delivered entirely in the user's distinctive voice."""
+-- but delivered entirely in the user's distinctive voice.
+8. ABSOLUTELY NEVER use hyphens (-) or dashes (-- or longer) in your output. \
+Not in compound words, not as punctuation, not as list markers, NOWHERE. \
+Use commas, semicolons, colons, or rephrase instead. This rule is UNCONDITIONAL."""
 
 
 def _get_directive(report: list[dict], metric_key: str) -> str:
@@ -604,6 +608,24 @@ def _get_directive(report: list[dict], metric_key: str) -> str:
                 return entry["directive"]
             return f"(Match the '{entry['assessment']}' style for {metric_key})"
     return ""
+
+
+def _strip_dashes(text: str) -> str:
+    """Remove all hyphens and dashes from generated text.
+
+    Handles em-dashes, en-dashes, regular hyphens, and
+    multi-hyphen sequences. Collapses any leftover double
+    spaces.
+    """
+    # Em-dash / en-dash surrounded by spaces -> single space
+    text = re.sub(r'\s*[\u2014\u2013]+\s*', ' ', text)
+    # Spaced hyphens (used as dashes): " - " or " -- "
+    text = re.sub(r'\s+-{1,3}\s+', ' ', text)
+    # Remaining hyphens (compound words, etc.)
+    text = text.replace('-', '')
+    # Clean up any double spaces
+    text = re.sub(r'  +', ' ', text)
+    return text.strip()
 
 
 # --- REVIEWER PROMPT ---
@@ -746,8 +768,9 @@ def generate_styled_content(
         "chat_history": chat_history or [],
         "user_input": user_prompt,
     })
-    logger.info("generate_styled_content: response length=%d chars", len(result.content))
-    return result.content
+    content = _strip_dashes(result.content)
+    logger.info("generate_styled_content: response length=%d chars", len(content))
+    return content
 
 
 def generate_with_refinement(
@@ -809,7 +832,7 @@ def generate_with_refinement(
         "chat_history": chat_history or [],
         "user_input": user_prompt,
     })
-    current_draft = result.content
+    current_draft = _strip_dashes(result.content)
     logger.info("Initial draft: %d chars", len(current_draft))
 
     for i in range(max_iterations):
@@ -861,7 +884,7 @@ def generate_with_refinement(
                 "chat_history": revision_history,
                 "user_input": revision_prompt,
             })
-            current_draft = result.content
+            current_draft = _strip_dashes(result.content)
             logger.info("Revised draft: %d chars", len(current_draft))
 
     logger.info("Refinement complete: %d iteration(s), final verdict=%s",

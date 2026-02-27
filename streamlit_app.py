@@ -25,6 +25,27 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+
+class _StreamlitLogHandler(logging.Handler):
+    """Logging handler that writes the latest log to a
+    Streamlit empty placeholder as small grey text."""
+
+    def __init__(self, placeholder):
+        super().__init__()
+        self._ph = placeholder
+
+    def emit(self, record):
+        try:
+            msg = record.getMessage()
+            self._ph.markdown(
+                f'<p style="color:grey;font-size:0.8em;'
+                f'margin:0">{msg}</p>',
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            pass
+
+
 # --- PAGE CONFIG ---
 
 st.set_page_config(
@@ -300,21 +321,37 @@ if st.session_state.profile:
 
         # Invoke with refinement loop
         with st.chat_message("assistant"):
-            with st.spinner("Writing & refining…"):
-                result = generate_with_refinement(
-                    profile=st.session_state.profile,
-                    user_prompt=_gen_prompt,
-                    api_key=api_key,
-                    model=(
-                        st.session_state.selected_model
-                    ),
-                    chat_history=lc_history,
-                    max_iterations=max_refinement_iters,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
+            _log_ph = st.empty()
+            _log_handler = _StreamlitLogHandler(_log_ph)
+            _log_handler.setLevel(logging.INFO)
+            _pipeline_logger = logging.getLogger(
+                "copyme.prompt_pipeline"
+            )
+            _pipeline_logger.addHandler(_log_handler)
+            try:
+                with st.spinner("Writing & refining…"):
+                    result = generate_with_refinement(
+                        profile=st.session_state.profile,
+                        user_prompt=_gen_prompt,
+                        api_key=api_key,
+                        model=(
+                            st.session_state
+                            .selected_model
+                        ),
+                        chat_history=lc_history,
+                        max_iterations=(
+                            max_refinement_iters
+                        ),
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+            finally:
+                _pipeline_logger.removeHandler(
+                    _log_handler
                 )
-                response = result["content"]
-                st.markdown(response)
+                _log_ph.empty()
+            response = result["content"]
+            st.markdown(response)
 
             # Show refinement iterations
             iters = result["iterations"]

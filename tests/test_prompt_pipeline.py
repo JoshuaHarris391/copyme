@@ -16,6 +16,7 @@ from copyme.prompt_pipeline import (
     _build_intensity_section,
     _build_anti_patterns,
     _build_style_exemplar,
+    _strip_dashes,
     FALLBACK_MODELS,
 )
 
@@ -238,6 +239,47 @@ class TestBuildStyleExemplar(unittest.TestCase):
     def test_neutral_profile(self):
         result = _build_style_exemplar({}, [], [])
         self.assertIn("writing voice sounds", result)
+
+
+# ---- Dash stripping ----
+
+
+class TestStripDashes(unittest.TestCase):
+    """Tests for _strip_dashes post-processing."""
+
+    def test_removes_hyphens(self):
+        self.assertEqual(
+            _strip_dashes("well-known fact"),
+            "wellknown fact",
+        )
+
+    def test_removes_em_dash(self):
+        self.assertEqual(
+            _strip_dashes("hello \u2014 world"),
+            "hello world",
+        )
+
+    def test_removes_en_dash(self):
+        self.assertEqual(
+            _strip_dashes("pages 10\u201320"),
+            "pages 10 20",
+        )
+
+    def test_removes_spaced_double_dash(self):
+        self.assertEqual(
+            _strip_dashes("this -- that"),
+            "this that",
+        )
+
+    def test_no_double_spaces(self):
+        result = _strip_dashes("a - b -- c")
+        self.assertNotIn("  ", result)
+
+    def test_clean_text_unchanged(self):
+        self.assertEqual(
+            _strip_dashes("no dashes here"),
+            "no dashes here",
+        )
 
 
 # ---- System prompt ----
