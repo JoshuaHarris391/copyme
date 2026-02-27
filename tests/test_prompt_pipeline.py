@@ -3,10 +3,20 @@ import unittest
 
 from copyme.prompt_pipeline import (
     METRICS_REFERENCE,
+    METRIC_THRESHOLDS,
+    REVIEWER_SYSTEM_PROMPT,
     build_system_prompt,
+    build_reviewer_prompt,
     create_chain,
     create_prompt_template,
     generate_styled_content,
+    list_available_models,
+    _compute_intensity,
+    _compute_intensity_report,
+    _build_intensity_section,
+    _build_anti_patterns,
+    _build_style_exemplar,
+    FALLBACK_MODELS,
 )
 
 
@@ -22,12 +32,6 @@ SAMPLE_PROFILE = {
         "formulaic_density": 0.143,
         "modal_hedging_ratio": 0.21,
         "flesch_reading_ease": 85.5,
-        "function_word_frequency": {
-            "prepositions": 0.067,
-            "conjunctions": 0.045,
-            "pronouns": 0.106,
-            "determiners": 0.091,
-        },
     },
     "qualitative": {
         "type_token_ratio_assessment": "standard",
@@ -50,15 +54,197 @@ SAMPLE_PROFILE = {
             "a", "'s", "of", "but", "were",
         ],
         "frequent_phrases": [
-            "tell ye", "but i", "and the", "let me", "me tell",
-            "ye about", "about the", "the time", "and me", "were and",
+            "tell ye", "but i", "and the",
+            "let me", "me tell",
+            "ye about", "about the", "the time",
+            "and me", "were and",
         ],
     },
 }
 
 
+# ---- Intensity computation ----
+
+
+class TestComputeIntensity(unittest.TestCase):
+    """Tests for _compute_intensity helper."""
+
+    def test_above_top_threshold(self):
+        label, mult = _compute_intensity(
+            89.8, METRIC_THRESHOLDS["discourse_marker_density"]
+        )
+        self.assertEqual(label, "conversational")
+        self.assertAlmostEqual(mult, 2.25, places=1)
+
+    def test_between_thresholds(self):
+        label, mult = _compute_intensity(
+            20.0, METRIC_THRESHOLDS["discourse_marker_density"]
+        )
+        self.assertEqual(label, "natural")
+        self.assertGreater(mult, 1.0)
+
+    def test_below_all_thresholds(self):
+        label, mult = _compute_intensity(
+            5.0, METRIC_THRESHOLDS["discourse_marker_density"]
+        )
+        self.assertEqual(label, "formal/polished")
+        self.assertLess(mult, 1.0)
+
+    def test_hedging_above_threshold(self):
+        label, mult = _compute_intensity(
+            0.23, METRIC_THRESHOLDS["modal_hedging_ratio"]
+        )
+        self.assertEqual(label, "tentative/hedged")
+        self.assertGreater(mult, 1.0)
+
+
+class TestComputeIntensityReport(unittest.TestCase):
+    """Tests for _compute_intensity_report."""
+
+    def test_returns_all_metrics(self):
+        report = _compute_intensity_report(
+            SAMPLE_PROFILE["quantitative"]
+        )
+        metric_keys = {e["metric"] for e in report}
+        for key in METRIC_THRESHOLDS:
+            self.assertIn(key, metric_keys)
+
+    def test_each_entry_has_required_keys(self):
+        report = _compute_intensity_report(
+            SAMPLE_PROFILE["quantitative"]
+        )
+        required = {
+            "metric", "score", "assessment",
+            "threshold", "multiplier", "directive",
+        }
+        for entry in report:
+            self.assertTrue(
+                required.issubset(entry.keys()),
+                f"Missing keys in {entry}",
+            )
+
+    def test_conversational_directive_present(self):
+        report = _compute_intensity_report(
+            SAMPLE_PROFILE["quantitative"]
+        )
+        dm_entry = next(
+            e for e in report
+            if e["metric"] == "discourse_marker_density"
+        )
+        self.assertEqual(dm_entry["assessment"], "conversational")
+        self.assertIn("MUST", dm_entry["directive"])
+
+    def test_hedging_directive_present(self):
+        report = _compute_intensity_report(
+            SAMPLE_PROFILE["quantitative"]
+        )
+        hedge_entry = next(
+            e for e in report
+            if e["metric"] == "modal_hedging_ratio"
+        )
+        self.assertEqual(
+            hedge_entry["assessment"], "tentative/hedged"
+        )
+        self.assertIn("hedge", hedge_entry["directive"].lower())
+
+
+class TestBuildIntensitySection(unittest.TestCase):
+    """Tests for _build_intensity_section formatting."""
+
+    def test_contains_strength_labels(self):
+        report = _compute_intensity_report(
+            SAMPLE_PROFILE["quantitative"]
+        )
+        section = _build_intensity_section(report)
+        # discourse_marker_density 78.38/40 = 1.96x -> STRONG
+        self.assertIn("DIRECTIVE:", section)
+        self.assertTrue(
+            any(s in section for s in [
+                "MILD", "MODERATE", "STRONG", "VERY STRONG"
+            ])
+        )
+
+
+# ---- Anti-patterns ----
+
+
+class TestBuildAntiPatterns(unittest.TestCase):
+    """Tests for _build_anti_patterns."""
+
+    def test_conversational_anti_pattern(self):
+        result = _build_anti_patterns(
+            SAMPLE_PROFILE["qualitative"], []
+        )
+        self.assertIn("Do NOT write in a polished", result)
+
+    def test_hedging_anti_pattern(self):
+        result = _build_anti_patterns(
+            SAMPLE_PROFILE["qualitative"], []
+        )
+        self.assertIn(
+            "Do NOT make absolute", result
+        )
+
+    def test_genre_anti_pattern(self):
+        result = _build_anti_patterns(
+            SAMPLE_PROFILE["qualitative"], []
+        )
+        self.assertIn("formal document", result)
+
+    def test_empty_qualitative_returns_empty(self):
+        result = _build_anti_patterns({}, [])
+        self.assertEqual(result, "")
+
+    def test_formal_profile_different_warnings(self):
+        formal_qual = {
+            "discourse_marker_density_assessment": "formal/polished",
+            "modal_hedging_ratio_assessment": "assertive/direct",
+        }
+        result = _build_anti_patterns(formal_qual, [])
+        self.assertIn("Do NOT use conversational", result)
+        self.assertIn("Do NOT hedge", result)
+
+
+# ---- Style exemplar ----
+
+
+class TestBuildStyleExemplar(unittest.TestCase):
+    """Tests for _build_style_exemplar."""
+
+    def test_conversational_includes_markers(self):
+        result = _build_style_exemplar(
+            SAMPLE_PROFILE["qualitative"],
+            SAMPLE_PROFILE["words"]["common_vocabulary"],
+            SAMPLE_PROFILE["words"]["frequent_phrases"],
+        )
+        self.assertIn("Well", result)
+        self.assertIn("actually", result.lower())
+
+    def test_hedging_includes_hedge_words(self):
+        result = _build_style_exemplar(
+            SAMPLE_PROFILE["qualitative"],
+            [], [],
+        )
+        self.assertIn("I think", result)
+
+    def test_includes_phrases(self):
+        result = _build_style_exemplar(
+            SAMPLE_PROFILE["qualitative"],
+            SAMPLE_PROFILE["words"]["common_vocabulary"],
+            SAMPLE_PROFILE["words"]["frequent_phrases"],
+        )
+        self.assertIn("tell ye", result)
+
+    def test_neutral_profile(self):
+        result = _build_style_exemplar({}, [], [])
+        self.assertIn("writing voice sounds", result)
+
+
+# ---- System prompt ----
+
+
 class TestBuildSystemPrompt(unittest.TestCase):
-    """Tests for the system prompt builder."""
+    """Tests for the full system prompt builder."""
 
     def setUp(self):
         self.prompt = build_system_prompt(SAMPLE_PROFILE)
@@ -91,14 +277,51 @@ class TestBuildSystemPrompt(unittest.TestCase):
         for phrase in SAMPLE_PROFILE["words"]["frequent_phrases"]:
             self.assertIn(phrase, self.prompt)
 
-    def test_contains_calibration_instructions(self):
-        self.assertIn("quantitative", self.prompt.lower())
-        self.assertIn("qualitative", self.prompt.lower())
-        self.assertIn("how much", self.prompt.lower())
+    def test_contains_intensity_section(self):
+        self.assertIn("INTENSITY-CALIBRATED", self.prompt)
+        self.assertIn("DIRECTIVE:", self.prompt)
+
+    def test_contains_mandatory_rules(self):
+        self.assertIn("MANDATORY STYLE RULES", self.prompt)
+        self.assertIn("Discourse & Formality", self.prompt)
+        self.assertIn("Hedging & Certainty", self.prompt)
+
+    def test_contains_anti_patterns(self):
+        self.assertIn("ANTI-PATTERNS", self.prompt)
+        self.assertIn("Do NOT", self.prompt)
+
+    def test_contains_style_exemplar(self):
+        self.assertIn("EXAMPLE OF TARGET VOICE", self.prompt)
+
+    def test_contains_vocabulary_mandate(self):
+        self.assertIn("YOU MUST use", self.prompt)
 
     def test_empty_profile_does_not_crash(self):
         prompt = build_system_prompt({})
         self.assertIn("AI scribe", prompt)
+
+
+# ---- Reviewer prompt ----
+
+
+class TestReviewerPrompt(unittest.TestCase):
+    """Tests for the reviewer system prompt and builder."""
+
+    def test_reviewer_system_has_verdict_format(self):
+        self.assertIn("VERDICT: PASS", REVIEWER_SYSTEM_PROMPT)
+        self.assertIn("VERDICT:", REVIEWER_SYSTEM_PROMPT)
+
+    def test_build_reviewer_prompt_includes_profile(self):
+        prompt = build_reviewer_prompt(
+            SAMPLE_PROFILE, "Test draft content."
+        )
+        self.assertIn("0.554", prompt)
+        self.assertIn("conversational", prompt)
+        self.assertIn("Test draft content.", prompt)
+        self.assertIn("tell ye", prompt)
+
+
+# ---- Prompt template ----
 
 
 class TestPromptTemplate(unittest.TestCase):
@@ -120,6 +343,9 @@ class TestPromptTemplate(unittest.TestCase):
         self.assertTrue(len(messages.messages) >= 2)
 
 
+# ---- Chain creation ----
+
+
 class TestCreateChain(unittest.TestCase):
     """Tests for chain creation (no API call made)."""
 
@@ -136,6 +362,31 @@ class TestCreateChain(unittest.TestCase):
         chain = create_chain(api_key="test-key-not-real")
         self.assertIsNotNone(chain)
 
+    def test_chain_with_custom_temperature(self):
+        chain = create_chain(
+            api_key="test-key-not-real",
+            temperature=0.5,
+        )
+        self.assertIsNotNone(chain)
+
+
+# ---- Model listing ----
+
+
+class TestListAvailableModels(unittest.TestCase):
+    """Tests for list_available_models."""
+
+    def test_invalid_key_returns_fallback(self):
+        result = list_available_models("invalid-key")
+        self.assertEqual(result, FALLBACK_MODELS)
+
+    def test_empty_key_returns_fallback(self):
+        result = list_available_models("")
+        self.assertEqual(result, FALLBACK_MODELS)
+
+
+# ---- Metrics reference ----
+
 
 class TestMetricsReference(unittest.TestCase):
     """Verify the metrics doc was loaded."""
@@ -143,6 +394,9 @@ class TestMetricsReference(unittest.TestCase):
     def test_metrics_reference_loaded(self):
         self.assertIn("Type-Token Ratio", METRICS_REFERENCE)
         self.assertIn("Flesch Reading Ease", METRICS_REFERENCE)
+
+
+# ---- Integration ----
 
 
 @unittest.skipUnless(
