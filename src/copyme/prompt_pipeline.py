@@ -628,6 +628,57 @@ def _strip_dashes(text: str) -> str:
     return text.strip()
 
 
+def _compare_profiles(
+    target: dict, draft_text: str,
+) -> str:
+    """Run linguistic analysis on draft_text and compare to target profile.
+
+    Returns a human-readable diff of quantitative metrics and
+    qualitative assessments.
+    """
+    from copyme.analyser import analyze_linguistic_style
+
+    logger.info("Running linguistic profile on draft output...")
+    output_profile = analyze_linguistic_style(draft_text)
+
+    lines = ["## LINGUISTIC PROFILE COMPARISON\n"]
+
+    # Quantitative diff
+    t_quant = target.get("quantitative", {})
+    o_quant = output_profile.get("quantitative", {})
+    lines.append("### Quantitative Metrics")
+    for key in t_quant:
+        if key == "function_word_frequency":
+            continue
+        t_val = t_quant.get(key)
+        o_val = o_quant.get(key)
+        if isinstance(t_val, (int, float)) and isinstance(
+            o_val, (int, float)
+        ):
+            delta = o_val - t_val
+            sign = "+" if delta >= 0 else ""
+            lines.append(
+                f"- **{key}**: target={t_val:.3f}, "
+                f"output={o_val:.3f}, "
+                f"delta={sign}{delta:.3f}"
+            )
+
+    # Qualitative diff
+    t_qual = target.get("qualitative", {})
+    o_qual = output_profile.get("qualitative", {})
+    lines.append("\n### Qualitative Assessments")
+    for key in t_qual:
+        t_val = t_qual.get(key, "N/A")
+        o_val = o_qual.get(key, "N/A")
+        match = "MATCH" if t_val == o_val else "MISMATCH"
+        lines.append(
+            f"- **{key}**: target=\"{t_val}\", "
+            f"output=\"{o_val}\" [{match}]"
+        )
+
+    return "\n".join(lines)
+
+
 # --- REVIEWER PROMPT ---
 
 REVIEWER_SYSTEM_PROMPT = """You are a linguistic style reviewer. Your job is to \
@@ -636,7 +687,9 @@ the writing faithfully matches the profile.
 
 You will receive:
 1. The target linguistic profile (quantitative + qualitative metrics)
-2. The writing to evaluate
+2. The user's common vocabulary and frequent phrases
+3. A vocabulary audit showing which profile words/phrases appear in the draft
+4. The writing to evaluate
 
 For each of these key dimensions, assess whether the writing matches:
 - Discourse marker density (conversational markers like 'well', 'actually', 'so')
@@ -644,21 +697,54 @@ For each of these key dimensions, assess whether the writing matches:
 - Sentence length and complexity
 - Punctuation density
 - Reading ease level
-- Vocabulary usage (common words and frequent phrases from the profile)
+- **Vocabulary fidelity**: The writing MUST primarily use words and phrases from \
+the user's profile. Check the vocabulary audit carefully. If the draft contains \
+novel phrases or vocabulary NOT present in the profile's common_vocabulary or \
+frequent_phrases, that is a FAIL. The writer should lean heavily on the user's \
+own words and phrases rather than inventing new ones.
+- **Phrase usage**: At least 2 of the user's frequent_phrases should appear in \
+each substantial paragraph. Common vocabulary words should dominate word choice.
 
 Respond in this EXACT format:
 VERDICT: PASS or FAIL
 ISSUES:
 - [list each specific issue, or "None" if PASS]
+VOCAB_MISSING:
+- [list profile words/phrases that SHOULD have been used but weren't]
+VOCAB_INVENTED:
+- [list notable words/phrases in the output that are NOT from the profile]
 REVISION_INSTRUCTIONS:
 - [specific instructions for fixing each issue, or "None" if PASS]"""
 
 
-def build_reviewer_prompt(profile: dict, draft: str) -> str:
+def build_reviewer_prompt(
+    profile: dict, draft: str,
+    profile_diff: str | None = None,
+) -> str:
     """Build the reviewer prompt with the profile and draft to evaluate."""
     quantitative = profile.get("quantitative", {})
     qualitative = profile.get("qualitative", {})
     words = profile.get("words", {})
+
+    common_vocab = words.get('common_vocabulary', [])
+    frequent_phrases = words.get('frequent_phrases', [])
+
+    # Vocabulary audit: check which profile items appear
+    draft_lower = draft.lower()
+    vocab_found = [
+        w for w in common_vocab if w.lower() in draft_lower
+    ]
+    vocab_missing = [
+        w for w in common_vocab if w.lower() not in draft_lower
+    ]
+    phrases_found = [
+        p for p in frequent_phrases
+        if p.lower() in draft_lower
+    ]
+    phrases_missing = [
+        p for p in frequent_phrases
+        if p.lower() not in draft_lower
+    ]
 
     return f"""## TARGET LINGUISTIC PROFILE
 
@@ -669,19 +755,33 @@ def build_reviewer_prompt(profile: dict, draft: str) -> str:
 {json.dumps(qualitative, indent=2)}
 
 ### Target Vocabulary
-Common words: {json.dumps(words.get('common_vocabulary', []))}
-Frequent phrases: {json.dumps(words.get('frequent_phrases', []))}
+Common words: {json.dumps(common_vocab)}
+Frequent phrases: {json.dumps(frequent_phrases)}
+
+### VOCABULARY AUDIT (auto-generated)
+Profile words FOUND in draft ({len(vocab_found)}/{len(common_vocab)}): \
+{json.dumps(vocab_found)}
+Profile words MISSING from draft ({len(vocab_missing)}/{len(common_vocab)}): \
+{json.dumps(vocab_missing)}
+Profile phrases FOUND in draft ({len(phrases_found)}/{len(frequent_phrases)}): \
+{json.dumps(phrases_found)}
+Profile phrases MISSING from draft ({len(phrases_missing)}/{len(frequent_phrases)}): \
+{json.dumps(phrases_missing)}
 
 ---
 
-## WRITING TO EVALUATE
+{f"## LINGUISTIC PROFILE COMPARISON (auto-generated)\n\n{profile_diff}\n\n---\n\n" if profile_diff else ""}## WRITING TO EVALUATE
 
 {draft}
 
 ---
 
-Evaluate the writing above against the target profile. Be strict — the writing \
-must genuinely sound like the person described by the profile."""
+Evaluate the writing above against the target profile. Be strict:
+1. The writing must genuinely sound like the person described by the profile.
+2. Pay close attention to the VOCABULARY AUDIT above. If many profile words or \
+phrases are missing, this is a FAIL.
+3. The writer should NOT invent new catchphrases or distinctive vocabulary. \
+They must use the user's own words and phrases from the profile."""
 
 
 # --- PROMPT TEMPLATE ---
@@ -704,7 +804,7 @@ def create_prompt_template() -> ChatPromptTemplate:
 def create_chain(
     api_key: str | None = None,
     model: str = DEFAULT_MODEL,
-    temperature: float = 0.7,
+    temperature: float = 0.3,
     max_tokens: int = 4096,
 ):
     """
@@ -779,9 +879,10 @@ def generate_with_refinement(
     api_key: str | None = None,
     model: str = DEFAULT_MODEL,
     chat_history: list | None = None,
-    max_iterations: int = 3,
-    temperature: float = 0.7,
+    max_iterations: int = 2,
+    temperature: float = 0.3,
     max_tokens: int = 4096,
+    on_draft=None,
 ) -> dict:
     """
     Generate styled content with a self-evaluation refinement loop.
@@ -796,9 +897,11 @@ def generate_with_refinement(
         api_key: Anthropic API key.
         model: Model identifier.
         chat_history: Prior messages for multi-turn context.
-        max_iterations: Maximum refinement passes (default 3).
-        temperature: Sampling temperature (default 0.7).
+        max_iterations: Maximum refinement passes (default 2).
+        temperature: Sampling temperature (default 0.3).
         max_tokens: Maximum tokens per response (default 4096).
+        on_draft: Optional callback(label, text) called each
+            time a draft is produced.
 
     Returns:
         Dict with keys:
@@ -834,11 +937,31 @@ def generate_with_refinement(
     })
     current_draft = _strip_dashes(result.content)
     logger.info("Initial draft: %d chars", len(current_draft))
+    logger.info("Initial draft text:\n%s", current_draft)
+    initial_draft = current_draft
+    if on_draft:
+        on_draft("Initial Draft", current_draft)
 
     for i in range(max_iterations):
+        # Compare draft profile to target profile
+        logger.info(
+            "Refinement iteration %d/%d: "
+            "comparing linguistic profiles...",
+            i + 1, max_iterations,
+        )
+        profile_diff = _compare_profiles(
+            profile, current_draft,
+        )
+
         # Review the draft
-        logger.info("Refinement iteration %d/%d: reviewing draft...", i + 1, max_iterations)
-        review_prompt = build_reviewer_prompt(profile, current_draft)
+        logger.info(
+            "Refinement iteration %d/%d: reviewing draft...",
+            i + 1, max_iterations,
+        )
+        review_prompt = build_reviewer_prompt(
+            profile, current_draft,
+            profile_diff=profile_diff,
+        )
         review_result = reviewer_llm.invoke([
             SystemMessage(content=REVIEWER_SYSTEM_PROMPT),
             HumanMessage(content=review_prompt),
@@ -850,47 +973,89 @@ def generate_with_refinement(
         if "VERDICT: PASS" in review_text.upper():
             verdict = "PASS"
 
-        logger.info("Refinement iteration %d/%d: verdict=%s", i + 1, max_iterations, verdict)
+        logger.info(
+            "Iteration %d/%d verdict: %s",
+            i + 1, max_iterations, verdict,
+        )
+        logger.info(
+            "Iteration %d/%d profile comparison:\n%s",
+            i + 1, max_iterations, profile_diff,
+        )
+        logger.info(
+            "Iteration %d/%d reviewer response:\n%s",
+            i + 1, max_iterations, review_text,
+        )
 
         iterations.append({
             "draft": current_draft,
             "verdict": verdict,
             "critique": review_text,
+            "profile_diff": profile_diff,
         })
 
         if verdict == "PASS":
             logger.info("Draft passed review on iteration %d", i + 1)
             break
 
-        # If FAIL and not last iteration, revise
-        if i < max_iterations - 1:
-            revision_prompt = (
-                f"Your previous draft was reviewed against the user's linguistic "
-                f"profile and FAILED the style check. Here is the critique:\n\n"
-                f"{review_text}\n\n"
-                f"Please rewrite your response to fix ALL the issues identified. "
-                f"Remember to strictly follow the user's linguistic style as "
-                f"defined in the system prompt. Here was the original request:\n\n"
-                f"{user_prompt}"
-            )
-            # Build history including the failed draft
-            revision_history = list(chat_history or [])
-            revision_history.append(HumanMessage(content=user_prompt))
-            revision_history.append(AIMessage(content=current_draft))
+        # Revise the draft based on critique
+        words_data = profile.get('words', {})
+        c_vocab = words_data.get(
+            'common_vocabulary', []
+        )
+        f_phrases = words_data.get(
+            'frequent_phrases', []
+        )
+        revision_prompt = (
+            f"Your previous draft was reviewed against the user's linguistic "
+            f"profile and FAILED the style check. Here is the critique:\n\n"
+            f"{review_text}\n\n"
+            f"The linguistic profile of your output was compared to the "
+            f"target profile. Here are the deviations:\n\n"
+            f"{profile_diff}\n\n"
+            f"Please rewrite your response to fix ALL the issues identified. "
+            f"Pay special attention to the metric deltas above and adjust "
+            f"your writing to close those gaps.\n"
+            f"CRITICAL: You MUST use words and phrases from the user's profile. "
+            f"Do NOT invent new phrases or vocabulary. Lean heavily on these:\n"
+            f"Common vocabulary: {json.dumps(c_vocab)}\n"
+            f"Frequent phrases: {json.dumps(f_phrases)}\n\n"
+            f"Remember to strictly follow the user's linguistic style as "
+            f"defined in the system prompt. Here was the original request:\n\n"
+            f"{user_prompt}"
+        )
+        # Build history including the failed draft
+        revision_history = list(chat_history or [])
+        revision_history.append(HumanMessage(content=user_prompt))
+        revision_history.append(AIMessage(content=current_draft))
 
-            logger.info("Revising draft (iteration %d)...", i + 2)
-            result = chain.invoke({
-                "system_prompt": system_prompt,
-                "chat_history": revision_history,
-                "user_input": revision_prompt,
-            })
-            current_draft = _strip_dashes(result.content)
-            logger.info("Revised draft: %d chars", len(current_draft))
+        logger.info(
+            "Iteration %d/%d revision plan: "
+            "adjusting to close metric gaps and "
+            "incorporate profile vocabulary.",
+            i + 1, max_iterations,
+        )
+        logger.info("Revising draft (iteration %d)...", i + 2)
+        result = chain.invoke({
+            "system_prompt": system_prompt,
+            "chat_history": revision_history,
+            "user_input": revision_prompt,
+        })
+        current_draft = _strip_dashes(result.content)
+        logger.info("Revised draft: %d chars", len(current_draft))
+        logger.info(
+            "Revision %d text:\n%s",
+            i + 1, current_draft,
+        )
+        if on_draft:
+            on_draft(
+                f"Revision {i + 1}", current_draft,
+            )
 
     logger.info("Refinement complete: %d iteration(s), final verdict=%s",
                 len(iterations), iterations[-1]["verdict"] if iterations else "N/A")
     return {
         "content": current_draft,
+        "initial_draft": initial_draft,
         "iterations": iterations,
         "total_iterations": len(iterations),
     }

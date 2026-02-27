@@ -8,7 +8,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 from copyme import analyze_linguistic_style
 from copyme.prompt_pipeline import (
     build_system_prompt,
-    create_chain,
     generate_with_refinement,
     list_available_models,
     DEFAULT_MODEL,
@@ -28,7 +27,8 @@ logging.basicConfig(
 
 class _StreamlitLogHandler(logging.Handler):
     """Logging handler that writes the latest log to a
-    Streamlit empty placeholder as small grey text."""
+    Streamlit empty placeholder as small grey text, and
+    accumulates all logs into session state."""
 
     def __init__(self, placeholder):
         super().__init__()
@@ -36,12 +36,14 @@ class _StreamlitLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            msg = record.getMessage()
+            msg = self.format(record)
             self._ph.markdown(
                 f'<p style="color:grey;font-size:0.8em;'
-                f'margin:0">{msg}</p>',
+                f'margin:0">{record.getMessage()}</p>',
                 unsafe_allow_html=True,
             )
+            if "logs" in st.session_state:
+                st.session_state.logs.append(msg)
         except Exception:
             pass
 
@@ -59,11 +61,13 @@ st.set_page_config(
 _DEFAULTS = {
     "profile": None,
     "chat_history": [],
-    "chain": None,
     "system_prompt": None,
     "selected_model": DEFAULT_MODEL,
     "available_models": None,
     "regenerate_index": None,
+    "edit_index": None,
+    "logs": [],
+    "sidebar_view": "💬 Chat",
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -130,13 +134,13 @@ with st.sidebar:
         "Temperature",
         min_value=0.0,
         max_value=1.0,
-        value=0.7,
+        value=0.3,
         step=0.05,
         help=(
             "Controls randomness in word choice. "
             "Lower = more deterministic and focused. "
             "Higher = more creative and varied. "
-            "0.7 is recommended for style mimicry."
+            "0.3 is recommended for style mimicry."
         ),
     )
 
@@ -157,7 +161,7 @@ with st.sidebar:
         "Max Refinement Iterations",
         min_value=1,
         max_value=5,
-        value=3,
+        value=2,
         step=1,
         help=(
             "How many times the AI reviews and revises "
@@ -166,6 +170,51 @@ with st.sidebar:
             "but slower."
         ),
     )
+
+    st.divider()
+    st.subheader("View")
+
+    _view = st.radio(
+        "Select view",
+        ["💬 Chat", "📋 Logs"],
+        index=(
+            0
+            if st.session_state.sidebar_view
+            == "💬 Chat"
+            else 1
+        ),
+        label_visibility="collapsed",
+    )
+    st.session_state.sidebar_view = _view
+
+    st.divider()
+    st.subheader("Session")
+
+    if st.button(
+        "🗑️ Clear Chat Only",
+        help=(
+            "Reset chat history but keep your "
+            "linguistic profile and example text."
+        ),
+    ):
+        st.session_state.chat_history = []
+        st.session_state.regenerate_index = None
+        st.session_state.edit_index = None
+        st.rerun()
+
+    if st.button(
+        "🗑️ Clear All & Reset",
+        type="primary",
+        help=(
+            "Full hard reset: clears all caches, "
+            "profile, chat history, and session state."
+        ),
+    ):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
 
 # --- MAIN LAYOUT ---
 
@@ -197,12 +246,6 @@ if st.button("Generate linguistic profile", type="primary"):
             st.session_state.profile = profile
             sp = build_system_prompt(profile)
             st.session_state.system_prompt = sp
-            st.session_state.chain = create_chain(
-                api_key=api_key,
-                model=st.session_state.selected_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
             st.session_state.chat_history = []
         st.success(
             "Linguistic profile generated! "
@@ -226,163 +269,343 @@ if st.session_state.profile:
         st.markdown("**Words Data**")
         st.json(profile.get("words", {}))
 
-    # --- STEP 3: CHAT INTERFACE ---
+    # --- STEP 3: VIEW SWITCHER ---
 
-    st.subheader("2. Chat with your AI scribe")
-
-    # Handle pending regeneration
-    _regen_idx = st.session_state.regenerate_index
-    if _regen_idx is not None:
-        # Remove the assistant message at _regen_idx
-        st.session_state.chat_history.pop(_regen_idx)
-        st.session_state.regenerate_index = None
-
-    # Render existing chat history with regenerate buttons
-    for _i, msg in enumerate(st.session_state.chat_history):
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg["role"] == "assistant":
-                if st.button(
-                    "🔄 Regenerate",
-                    key=f"regen_{_i}",
-                    help=(
-                        "Re-generate this response with "
-                        "current model and settings."
+    if _view == "📋 Logs":
+        st.subheader("📋 Logs")
+        _log_container = st.container()
+        with _log_container:
+            if st.session_state.logs:
+                st.code(
+                    "\n".join(
+                        st.session_state.logs
                     ),
-                ):
-                    st.session_state.regenerate_index = _i
-                    st.rerun()
-
-    # Determine if we need to generate (new input or regeneration)
-    _needs_generation = False
-    _gen_prompt = None
-
-    # Check for regeneration: last message is now a user
-    # message that lost its assistant reply
-    _hist = st.session_state.chat_history
-    if (
-        _hist
-        and _hist[-1]["role"] == "user"
-        and (
-            len(_hist) < 2
-            or _hist[-2]["role"] != "assistant"
-            or _regen_idx is not None
-        )
-    ):
-        _needs_generation = True
-        _gen_prompt = _hist[-1]["content"]
-
-    # Chat input
-    user_input = st.chat_input(
-        "Ask the AI scribe to write something…"
-    )
-    if user_input:
-        if not api_key:
-            st.error(
-                "Please provide your Anthropic API key "
-                "in the sidebar."
-            )
-        else:
-            st.session_state.chat_history.append(
-                {"role": "user", "content": user_input}
-            )
-            _needs_generation = True
-            _gen_prompt = user_input
-            with st.chat_message("user"):
-                st.markdown(user_input)
-
-    if _needs_generation and _gen_prompt and api_key:
-        # Build LangChain history (everything before the
-        # last user message)
-        lc_history = []
-        for msg in st.session_state.chat_history[:-1]:
-            if msg["role"] == "user":
-                lc_history.append(
-                    HumanMessage(content=msg["content"])
+                    language="log",
                 )
             else:
-                lc_history.append(
-                    AIMessage(content=msg["content"])
+                st.info(
+                    "No logs yet. Generate a "
+                    "response to see logs here."
                 )
+        if st.button("🗑️ Clear logs"):
+            st.session_state.logs = []
+            st.rerun()
 
-        # Recreate chain if needed
-        if st.session_state.chain is None:
-            st.session_state.chain = create_chain(
-                api_key=api_key,
-                model=st.session_state.selected_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
+    else:
+        # Handle pending regeneration
+        _regen_idx = st.session_state.regenerate_index
+        if _regen_idx is not None:
+            st.session_state.chat_history.pop(_regen_idx)
+            st.session_state.regenerate_index = None
+
+        # Handle pending edit
+        _edit_idx = st.session_state.edit_index
+        if _edit_idx is not None:
+            _old_content = (
+                st.session_state.chat_history[_edit_idx]
+                ["content"]
             )
-            st.session_state.system_prompt = (
-                build_system_prompt(
-                    st.session_state.profile
+            with st.chat_message("user"):
+                st.markdown(
+                    "*✏️ Editing your message:*"
                 )
-            )
-
-        # Invoke with refinement loop
-        with st.chat_message("assistant"):
-            _log_ph = st.empty()
-            _log_handler = _StreamlitLogHandler(_log_ph)
-            _log_handler.setLevel(logging.INFO)
-            _pipeline_logger = logging.getLogger(
-                "copyme.prompt_pipeline"
-            )
-            _pipeline_logger.addHandler(_log_handler)
-            try:
-                with st.spinner("Writing & refining…"):
-                    result = generate_with_refinement(
-                        profile=st.session_state.profile,
-                        user_prompt=_gen_prompt,
-                        api_key=api_key,
-                        model=(
+                _edited = st.text_area(
+                    "Edit your message",
+                    value=_old_content,
+                    height=150,
+                    key="edit_text_area",
+                )
+                _col1, _col2 = st.columns(2)
+                with _col1:
+                    if st.button(
+                        "✅ Send edited message",
+                        type="primary",
+                    ):
+                        st.session_state.chat_history[
+                            _edit_idx
+                        ]["content"] = _edited.strip()
+                        st.session_state.chat_history = (
                             st.session_state
-                            .selected_model
+                            .chat_history[
+                                :_edit_idx + 1
+                            ]
+                        )
+                        st.session_state.edit_index = (
+                            None
+                        )
+                        st.rerun()
+                with _col2:
+                    if st.button("❌ Cancel"):
+                        st.session_state.edit_index = (
+                            None
+                        )
+                        st.rerun()
+            st.stop()
+
+        # Render chat history with action buttons
+        for _i, msg in enumerate(
+            st.session_state.chat_history
+        ):
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                if msg["role"] == "assistant":
+                    if st.button(
+                        "🔄 Regenerate",
+                        key=f"regen_{_i}",
+                        help=(
+                            "Re-generate this response "
+                            "with current model and "
+                            "settings."
                         ),
-                        chat_history=lc_history,
-                        max_iterations=(
-                            max_refinement_iters
+                    ):
+                        st.session_state.regenerate_index = _i
+                        st.rerun()
+                elif msg["role"] == "user":
+                    if st.button(
+                        "✏️ Edit & Resend",
+                        key=f"edit_{_i}",
+                        help=(
+                            "Edit this message and "
+                            "re-generate from here."
                         ),
-                        temperature=temperature,
-                        max_tokens=max_tokens,
+                    ):
+                        st.session_state.edit_index = _i
+                        st.rerun()
+
+        # Determine if we need to generate
+        _needs_generation = False
+        _gen_prompt = None
+
+        _hist = st.session_state.chat_history
+        if (
+            _hist
+            and _hist[-1]["role"] == "user"
+            and (
+                len(_hist) < 2
+                or _hist[-2]["role"] != "assistant"
+                or _regen_idx is not None
+            )
+        ):
+            _needs_generation = True
+            _gen_prompt = _hist[-1]["content"]
+
+        # Chat input
+        user_input = st.chat_input(
+            "Ask the AI scribe to write something…"
+        )
+        if user_input:
+            if not api_key:
+                st.error(
+                    "Please provide your Anthropic "
+                    "API key in the sidebar."
+                )
+            else:
+                st.session_state.chat_history.append(
+                    {
+                        "role": "user",
+                        "content": user_input,
+                    }
+                )
+                _needs_generation = True
+                _gen_prompt = user_input
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+
+        if (
+            _needs_generation
+            and _gen_prompt
+            and api_key
+        ):
+            # Build LangChain history
+            lc_history = []
+            for msg in (
+                st.session_state.chat_history[:-1]
+            ):
+                if msg["role"] == "user":
+                    lc_history.append(
+                        HumanMessage(
+                            content=msg["content"]
+                        )
                     )
-            finally:
-                _pipeline_logger.removeHandler(
+                else:
+                    lc_history.append(
+                        AIMessage(
+                            content=msg["content"]
+                        )
+                    )
+
+            # Invoke with refinement loop
+            with st.chat_message("assistant"):
+                _log_ph = st.empty()
+                _log_handler = _StreamlitLogHandler(
+                    _log_ph
+                )
+                _log_handler.setLevel(logging.INFO)
+                _log_handler.setFormatter(
+                    logging.Formatter(
+                        "%(asctime)s [%(name)s] "
+                        "%(levelname)s: %(message)s",
+                        datefmt="%H:%M:%S",
+                    )
+                )
+                _pipeline_logger = logging.getLogger(
+                    "copyme.prompt_pipeline"
+                )
+                _pipeline_logger.addHandler(
                     _log_handler
                 )
-                _log_ph.empty()
-            response = result["content"]
-            st.markdown(response)
 
-            # Show refinement iterations
-            iters = result["iterations"]
-            total = result["total_iterations"]
-            if total > 0:
-                label = (
-                    f"🔄 Refinement: "
-                    f"{total} iteration(s)"
+                # Live draft output
+                _drafts_ctr = st.container()
+
+                def _on_draft(label, text):
+                    with _drafts_ctr:
+                        with st.expander(
+                            f"📝 {label}",
+                            expanded=False,
+                        ):
+                            st.markdown(text)
+
+                try:
+                    with st.spinner(
+                        "Writing & refining…"
+                    ):
+                        result = (
+                            generate_with_refinement(
+                                profile=(
+                                    st.session_state
+                                    .profile
+                                ),
+                                user_prompt=_gen_prompt,
+                                api_key=api_key,
+                                model=(
+                                    st.session_state
+                                    .selected_model
+                                ),
+                                chat_history=lc_history,
+                                max_iterations=(
+                                    max_refinement_iters
+                                ),
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                on_draft=_on_draft,
+                            )
+                        )
+                finally:
+                    _pipeline_logger.removeHandler(
+                        _log_handler
+                    )
+                    _log_ph.empty()
+
+                response = result["content"]
+                st.markdown("### Final Response")
+                st.markdown(response)
+
+                # Show refinement iterations
+                iters = result["iterations"]
+                total = result["total_iterations"]
+                init_draft = result.get(
+                    "initial_draft"
                 )
-                last = iters[-1]["verdict"]
-                if last == "PASS":
-                    label += " — ✅ PASSED"
-                else:
-                    label += " — ⚠️ best effort"
+                if total > 0:
+                    label = (
+                        f"🔄 Refinement: "
+                        f"{total} iteration(s)"
+                    )
+                    last = iters[-1]["verdict"]
+                    if last == "PASS":
+                        label += " — ✅ PASSED"
+                    else:
+                        label += " — ⚠️ best effort"
 
-                with st.expander(label, expanded=False):
-                    for idx, it in enumerate(iters, 1):
-                        st.markdown(
-                            f"**Iteration {idx}** "
-                            f"— {it['verdict']}"
-                        )
-                        st.markdown(
-                            it["critique"]
-                        )
-                        if idx < total:
+                    with st.expander(
+                        label, expanded=False
+                    ):
+                        if init_draft:
+                            st.markdown(
+                                "### Original Draft"
+                            )
+                            st.markdown(init_draft)
                             st.divider()
 
-        st.session_state.chat_history.append(
-            {"role": "assistant", "content": response}
-        )
-        st.rerun()
+                        for idx, it in enumerate(
+                            iters, 1
+                        ):
+                            verdict_icon = (
+                                "✅"
+                                if it["verdict"]
+                                == "PASS"
+                                else "❌"
+                            )
+                            st.markdown(
+                                f"### Iteration "
+                                f"{idx} "
+                                f"{verdict_icon} "
+                                f"{it['verdict']}"
+                            )
+
+                            st.markdown(
+                                "**Draft Reviewed**"
+                            )
+                            st.markdown(
+                                it["draft"]
+                            )
+
+                            pdiff = it.get(
+                                "profile_diff"
+                            )
+                            if pdiff:
+                                st.markdown(
+                                    "**Linguistic "
+                                    "Profile "
+                                    "Comparison**"
+                                )
+                                st.code(
+                                    pdiff,
+                                    language=(
+                                        "markdown"
+                                    ),
+                                )
+
+                            st.markdown(
+                                "**Reviewer "
+                                "Analysis**"
+                            )
+                            st.markdown(
+                                it["critique"]
+                            )
+
+                            if (
+                                it["verdict"]
+                                != "PASS"
+                            ):
+                                st.markdown(
+                                    "**Revision "
+                                    "Plan:** "
+                                    "Adjusting draft "
+                                    "to close metric "
+                                    "gaps and "
+                                    "incorporate "
+                                    "profile "
+                                    "vocabulary."
+                                )
+
+                            if idx < total:
+                                st.divider()
+
+                        st.divider()
+                        st.markdown(
+                            "### Final Output"
+                        )
+                        st.markdown(response)
+
+            st.session_state.chat_history.append(
+                {
+                    "role": "assistant",
+                    "content": response,
+                }
+            )
+            st.rerun()
 else:
     st.info(
         "👆 Generate a linguistic profile from "

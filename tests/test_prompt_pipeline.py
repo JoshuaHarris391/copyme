@@ -17,6 +17,7 @@ from copyme.prompt_pipeline import (
     _build_anti_patterns,
     _build_style_exemplar,
     _strip_dashes,
+    _compare_profiles,
     FALLBACK_MODELS,
 )
 
@@ -280,6 +281,56 @@ class TestStripDashes(unittest.TestCase):
             _strip_dashes("no dashes here"),
             "no dashes here",
         )
+
+
+# ---- Profile comparison ----
+
+
+class TestCompareProfiles(unittest.TestCase):
+    """Tests for _compare_profiles output analysis."""
+
+    def test_returns_string(self):
+        result = _compare_profiles(
+            SAMPLE_PROFILE,
+            "So actually, I was thinking about this, "
+            "and honestly it really comes down to "
+            "the basics, ye know what I mean? "
+            "Tell ye what, basically the whole thing "
+            "is grand like.",
+        )
+        self.assertIsInstance(result, str)
+
+    def test_contains_quantitative_section(self):
+        result = _compare_profiles(
+            SAMPLE_PROFILE,
+            "Some sample text for analysis.",
+        )
+        self.assertIn("Quantitative Metrics", result)
+
+    def test_contains_qualitative_section(self):
+        result = _compare_profiles(
+            SAMPLE_PROFILE,
+            "Some sample text for analysis.",
+        )
+        self.assertIn("Qualitative Assessments", result)
+
+    def test_contains_delta(self):
+        result = _compare_profiles(
+            SAMPLE_PROFILE,
+            "Some sample text for analysis.",
+        )
+        self.assertIn("delta=", result)
+
+    def test_contains_match_or_mismatch(self):
+        result = _compare_profiles(
+            SAMPLE_PROFILE,
+            "Some sample text for analysis.",
+        )
+        has_match = (
+            "[MATCH]" in result
+            or "[MISMATCH]" in result
+        )
+        self.assertTrue(has_match)
 
 
 # ---- System prompt ----
