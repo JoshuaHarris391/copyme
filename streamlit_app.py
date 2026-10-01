@@ -1,14 +1,19 @@
 import time
 
+import pandas as pd
 import streamlit as st
 
 from copyme import (
+    DEFAULT_VOCABULARY_PERCENTILE,
+    StyleAnalyser,
     TextTooLongError,
-    analyze_linguistic_style,
     build_pre_prompt,
+    build_profile,
+    count_tokens,
     max_length_for_memory,
     memory_budget_from_env,
     memory_for_length,
+    summarise_vocabulary,
 )
 
 
@@ -48,12 +53,45 @@ with st.sidebar:
     st.metric("Maximum text length", f"{max_length:,} characters")
     st.caption(f"Current input: {len(cleaned_text):,} characters")
 
+    st.header("Vocabulary")
+    st.write(
+        "Words and phrases are ranked by frequency, then trimmed to the most "
+        "frequent share of distinct terms. Lower values keep only the words the "
+        "author leans on most; higher values keep more of the long tail."
+    )
+    vocabulary_percentile = st.slider(
+        "Keep the most frequent (%)",
+        min_value=1,
+        max_value=100,
+        value=int(DEFAULT_VOCABULARY_PERCENTILE),
+        step=1,
+        help=(
+            "Proportional, not absolute: 20% of a short text is a handful of "
+            "terms, 20% of a long text is a lot. Changing this re-derives the "
+            "vocabulary from the cached parse, so it is instant."
+        ),
+    )
+
+
+# The SpaCy parse is the expensive half of the analysis, so it runs only when
+# the button is pressed. Everything below re-derives from that cached parse, so
+# changing the vocabulary slider stays instant instead of re-parsing the text.
+
+signature = (cleaned_text, float(memory_gb))
+analysis = st.session_state.get("analysis")
+
+if analysis is not None and analysis["signature"] != signature:
+    # Text or memory budget changed: the cached parse no longer applies. Drop it
+    # so the SpaCy document is released instead of being held in session state.
+    # Note: dict.pop() returns the removed value, so clear the flag separately.
+    st.session_state.pop("analysis", None)
+    analysis = None
+
 if st.button("Generate linguistic profile", type="primary"):
     if not cleaned_text:
         st.warning("Please enter some text before generating a profile.")
     else:
         started = time.monotonic()
-        results = None
 
         with st.status("Analyzing text...", expanded=True) as status:
             progress_bar = st.progress(0.0, text="Starting analysis...")
@@ -68,7 +106,7 @@ if st.button("Generate linguistic profile", type="primary"):
                 stage_caption.caption(f"Elapsed: {elapsed:.1f}s")
 
             try:
-                results = analyze_linguistic_style(
+                analyzer = StyleAnalyser(
                     cleaned_text, memory_gb=memory_gb, on_progress=on_progress
                 )
             except TextTooLongError as exc:
@@ -83,37 +121,80 @@ if st.button("Generate linguistic profile", type="primary"):
                     f"and try again."
                 )
             else:
-                pre_prompt = build_pre_prompt(results)
+                analysis = {"signature": signature, "analyzer": analyzer}
+                st.session_state["analysis"] = analysis
+                stage_caption.empty()
                 progress_bar.progress(1.0, text="Done")
                 status.update(
-                    label=(
-                        "Analysis complete in "
-                        f"{time.monotonic() - started:.1f}s"
-                    ),
+                    label=f"Analysis complete in {time.monotonic() - started:.1f}s",
                     state="complete",
                     expanded=False,
                 )
 
-        if results is not None:
-            limits = results.get("limits", {})
-            st.caption(
-                "Analysed "
-                f"{limits.get('text_length', len(cleaned_text)):,} characters "
-                f"(limit {limits.get('max_length', max_length):,})."
+
+if analysis is not None:
+    analyzer = analysis["analyzer"]
+    results = build_profile(analyzer, vocabulary_percentile=vocabulary_percentile)
+    pre_prompt = build_pre_prompt(results)
+
+    vocabulary = summarise_vocabulary(
+        analyzer.word_counts, analyzer.repeated_counts, vocabulary_percentile
+    )
+    words = vocabulary["common_vocabulary"]
+    phrases = vocabulary["frequent_phrases"]
+
+    limits = results.get("limits", {})
+    st.caption(
+        "Analysed "
+        f"{limits.get('text_length', len(cleaned_text)):,} characters "
+        f"(limit {limits.get('max_length', max_length):,})."
+    )
+
+    st.subheader("Quantitative Metrics")
+    st.json(results.get("quantitative", {}))
+
+    st.subheader("Qualitative Assessments")
+    st.json(results.get("qualitative", {}))
+
+    st.subheader("Vocabulary & Phrases")
+    st.caption(
+        f"Most frequent {vocabulary_percentile}% of distinct terms: "
+        f"{len(words):,} of {len(analyzer.word_counts):,} words and "
+        f"{len(phrases):,} of {len(analyzer.repeated_counts):,} phrases."
+    )
+
+    if not words and not phrases:
+        st.info("No vocabulary was captured from this text.")
+    else:
+        words_column, phrases_column = st.columns(2)
+        with words_column:
+            st.markdown("**Words**")
+            st.dataframe(
+                pd.DataFrame(words, columns=["term", "count"]), hide_index=True
+            )
+        with phrases_column:
+            st.markdown("**Phrases**")
+            st.dataframe(
+                pd.DataFrame(phrases, columns=["term", "count"]), hide_index=True
             )
 
-            st.subheader("Quantitative Metrics")
-            st.json(results.get("quantitative", {}))
+    st.subheader("Copyable Pre-Prompt")
 
-            st.subheader("Qualitative Assessments")
-            st.json(results.get("qualitative", {}))
+    token_count, exact = count_tokens(pre_prompt)
+    token_label = f"**{token_count:,} tokens**"
+    if not exact:
+        token_label += " (estimated)"
+    st.markdown(
+        f"Pre-prompt size: {len(pre_prompt):,} characters \u00b7 {token_label}"
+    )
+    if not exact:
+        st.caption(
+            "Install `tiktoken` for exact counts. The estimate is calibrated "
+            "against `cl100k_base` and is usually within about 10%."
+        )
 
-            st.subheader("Words Data")
-            st.json(results.get("words", {}))
-
-            st.subheader("Copyable Pre-Prompt")
-            st.caption(
-                "Click the copy icon in the top-right of the block, then paste into "
-                "ChatGPT, Claude, or any other LLM."
-            )
-            st.code(pre_prompt, language="markdown")
+    st.caption(
+        "Click the copy icon in the top-right of the block, then paste into "
+        "ChatGPT, Claude, or any other LLM."
+    )
+    st.code(pre_prompt, language="markdown")

@@ -2,15 +2,21 @@ from .analyser import (
     ANALYSIS_STAGES,
     CHARS_PER_GB,
     DEFAULT_MEMORY_GB,
+    DEFAULT_VOCABULARY_PERCENTILE,
     ProgressReporter,
     StyleAnalyser,
     TextTooLongError,
     analyze_linguistic_style,
+    build_profile,
     configure_memory_budget,
+    count_tokens,
+    estimate_tokens,
     get_max_length,
     max_length_for_memory,
     memory_budget_from_env,
     memory_for_length,
+    summarise_vocabulary,
+    top_fraction,
 )
 from .metrics_dictionary import LINGUISTIC_STYLE_METRICS, PRE_PROMPT_INSTRUCTION
 from .pre_prompt import build_pre_prompt
@@ -31,4 +37,10 @@ __all__ = [
     "memory_for_length",
     "ANALYSIS_STAGES",
     "ProgressReporter",
+    "DEFAULT_VOCABULARY_PERCENTILE",
+    "top_fraction",
+    "summarise_vocabulary",
+    "build_profile",
+    "count_tokens",
+    "estimate_tokens",
 ]

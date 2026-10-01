@@ -49,9 +49,10 @@ Streamlit will open the app at <http://localhost:8501>.
 ### Use
 1. Paste a sample of the author's writing into **Text to analyze** (a few paragraphs is enough; longer is better).
 2. Click **Generate linguistic profile**. A status container shows which stage is running (**Parsing text with spaCy**, then semantic analysis, metrics, and so on), a progress bar, and elapsed time; it collapses to *Analysis complete in Ns* when done.
-3. Inspect the three raw sections (**Quantitative**, **Qualitative**, **Words**).
-4. Scroll to **Copyable Pre-Prompt**, click the copy icon in the top-right of the block, and paste it as the first message of a fresh ChatGPT / Claude / Gemini chat.
-5. Then ask the LLM to write whatever you need — it will use the profile as a target style guide.
+3. Inspect the three raw sections (**Quantitative**, **Qualitative**, **Vocabulary & Phrases**).
+4. Adjust **Keep the most frequent (%)** in the sidebar to control how much vocabulary is captured (see below). This re-derives the vocabulary from the cached parse, so it updates instantly rather than re-parsing the text.
+5. Scroll to **Copyable Pre-Prompt**. A size indicator reports its character and token count, so you can check it fits the model's context window before pasting. Click the copy icon in the top-right of the block, and paste it as the first message of a fresh ChatGPT / Claude / Gemini chat.
+6. Then ask the LLM to write whatever you need — it will use the profile as a target style guide.
 
 More UI-specific notes are in [`docs/streamlit_app.md`](docs/streamlit_app.md).
 
@@ -74,10 +75,26 @@ To analyse a 2,253,363-character sample you need a budget of about 23 GB. Be
 aware that this is real memory: a document that large needs tens of gigabytes
 available at parse time, so prefer trimming the sample or splitting it.
 
+### Vocabulary percentile
+
+The **Keep the most frequent (%)** slider controls how much of the author's
+vocabulary is captured. Words and phrases are ranked by frequency and trimmed to
+the most frequent share of *distinct terms*, with words and phrases truncated
+independently. The default is 20%.
+
+The knob is **proportional, not absolute**: 20% of a short text is a handful of
+terms, 20% of a long text is a large one. On a 675-distinct-word corpus, 20%
+keeps 135 terms (everything appearing three or more times). At least one term is
+always kept, and raising the slider always returns a superset of the lower
+setting.
+
+The selection drives both the displayed tables and the vocabulary section of the
+pre-prompt, so lowering it produces a shorter, sharper style guide.
+
 ## Programmatic use
 
 ```python
-from copyme import analyze_linguistic_style, build_pre_prompt
+from copyme import StyleAnalyser, analyze_linguistic_style, build_pre_prompt, build_profile
 
 sample = open("my_writing.txt").read()
 
@@ -87,15 +104,48 @@ def on_progress(label, percent):
 
 # Optional: raise the temporary-memory budget for very long samples.
 # ~1 GB per 100,000 characters; 25 GB -> 2,500,000 characters.
-results = analyze_linguistic_style(sample, memory_gb=25, on_progress=on_progress)
+results = analyze_linguistic_style(
+    sample, memory_gb=25, on_progress=on_progress, vocabulary_percentile=20
+)
 pre_prompt = build_pre_prompt(results)
 print(pre_prompt)
 ```
 
+Parsing is the expensive half of the analysis, so the two halves are exposed
+separately. Parse once, then re-derive the profile as often as you like — this is
+what lets the UI respond to the vocabulary slider without re-parsing:
+
+```python
+analyzer = StyleAnalyser(sample)          # expensive: runs SpaCy
+profile = build_profile(analyzer, vocabulary_percentile=20)   # cheap
+slimmer = build_profile(analyzer, vocabulary_percentile=5)    # also cheap
+```
+
 `analyze_linguistic_style` returns `{"quantitative": {...}, "qualitative": {...}, "words": {...}, "limits": {...}}`.
 `limits` reports the analysed `text_length`, the configured `max_length`, and
-the `memory_budget_gb` behind it. `build_pre_prompt` composes the Markdown block
-(dictionary + metrics + instructions) ready to paste into an LLM.
+the `memory_budget_gb` behind it. Passing `vocabulary_percentile=None` restores
+the legacy behaviour of the top ten words and phrases. `build_pre_prompt`
+composes the Markdown block (dictionary + metrics + instructions) ready to paste
+into an LLM.
+
+To check that the pre-prompt fits a context window, measure it with
+`count_tokens`, which returns the count and whether it is exact:
+
+```python
+from copyme import build_pre_prompt, count_tokens
+
+pre_prompt = build_pre_prompt(results)
+tokens, exact = count_tokens(pre_prompt)
+print(f"{tokens:,} tokens" + ("" if exact else " (estimated)"))
+```
+
+If `tiktoken` is installed, `count_tokens` uses its `cl100k_base` encoding and
+returns an exact count — accurate for the GPT-3.5/GPT-4 family and a close guide
+for other vendors. Without it (the default, no extra dependency and no network
+access) the count is an estimate calibrated against `cl100k_base`: 99% of the
+true count for a generated pre-prompt, and within roughly 10% for prose, JSON
+and source code. Note that `tiktoken` downloads its merge table on first use, so
+it needs network access once.
 
 The helpers behind the budget are public too:
 
