@@ -1,3 +1,5 @@
+import os
+
 import spacy
 import nltk
 import textstat
@@ -12,6 +14,134 @@ try:
 except OSError:
     print("Error: Spacy model not found. Run: python -m spacy download en_core_web_sm")
     exit()
+
+
+# --- MEMORY BUDGET / INPUT LENGTH LIMITS ---
+
+# SpaCy's parser and NER models need roughly 1 GB of temporary memory per
+# 100,000 characters of input, so the character limit a document can reach is a
+# direct function of how much temporary memory we are willing to allocate.
+CHARS_PER_GB = 100_000
+
+# 2 GB -> 200,000 characters. Deliberately below SpaCy's own 1,000,000-character
+# default: a conservative ceiling that keeps a stray paste from asking for tens
+# of gigabytes of temporary memory.
+DEFAULT_MEMORY_GB = 2.0
+
+# Budgets below this are almost certainly a mistake rather than an intent.
+MIN_MEMORY_GB = 0.01
+
+
+class TextTooLongError(ValueError):
+    """Raised when input exceeds the configured character limit.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` handlers (and
+    the message SpaCy itself would have raised) keep working.
+    """
+
+
+def max_length_for_memory(memory_gb):
+    """Return the number of characters that fit in ``memory_gb`` GB of temp memory.
+
+    Args:
+        memory_gb (float): Temporary memory budget in gigabytes.
+
+    Returns:
+        int: Maximum input length in characters (at least 1).
+    """
+    return max(1, int(memory_gb * CHARS_PER_GB))
+
+
+
+def memory_for_length(text_length):
+    """Return the temporary memory (GB) an input of ``text_length`` would need.
+
+    This is the inverse of :func:`max_length_for_memory`.
+
+    Args:
+        text_length (int): Input length in characters.
+
+    Returns:
+        float: Estimated temporary memory in gigabytes, rounded to 2 decimals.
+    """
+    return round(max(0, text_length) / CHARS_PER_GB, 2)
+
+
+
+def configure_memory_budget(memory_gb=None):
+    """Set ``nlp.max_length`` from a temporary-memory budget.
+
+    Args:
+        memory_gb (float, optional): Temporary memory budget in gigabytes. When
+            ``None``, the ``COPYME_MEMORY_GB`` environment variable is used,
+            falling back to :data:`DEFAULT_MEMORY_GB`.
+
+    Returns:
+        int: The resulting maximum input length in characters.
+    """
+    if memory_gb is None:
+        memory_gb = memory_budget_from_env()
+    try:
+        memory_gb = float(memory_gb)
+    except (TypeError, ValueError):
+        raise ValueError(f"memory_gb must be a number, got {memory_gb!r}") from None
+    nlp.max_length = max_length_for_memory(max(memory_gb, MIN_MEMORY_GB))
+    return nlp.max_length
+
+
+
+def memory_budget_from_env():
+    """Read the temporary memory budget from ``COPYME_MEMORY_GB``.
+
+    Returns:
+        float: The configured budget, or :data:`DEFAULT_MEMORY_GB` when the
+            variable is unset or not a positive number.
+    """
+    raw = os.environ.get("COPYME_MEMORY_GB")
+    if raw is None:
+        return DEFAULT_MEMORY_GB
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_MEMORY_GB
+    return value if value > 0 else DEFAULT_MEMORY_GB
+
+
+
+def get_max_length():
+    """Return the current maximum input length in characters (``nlp.max_length``)."""
+    return nlp.max_length
+
+
+def check_text_length(text):
+    """Validate ``text`` against the configured character limit.
+
+    Args:
+        text (str): The text about to be analysed.
+
+    Raises:
+        TextTooLongError: If ``len(text)`` exceeds the configured maximum. The
+            message reports the current limit, the budget behind it, and the
+            budget that would be required to analyse the text.
+    """
+    text_length = len(text)
+    max_length = get_max_length()
+    if text_length > max_length:
+        budget = memory_for_length(max_length)
+        required = memory_for_length(text_length)
+        raise TextTooLongError(
+            f"Text of length {text_length:,} characters exceeds the configured "
+            f"maximum of {max_length:,} characters "
+            f"(temporary memory budget: {budget:.2f} GB; "
+            f"this input needs about {required:.2f} GB). "
+            f"Raise the budget with configure_memory_budget({required}) or by "
+            f"setting COPYME_MEMORY_GB={required}."
+        )
+
+
+# Apply the environment-configured budget at import time so callers that never
+# touch the helpers still get a sensible limit.
+configure_memory_budget()
 
 # 2. Load NLTK Resources
 try:
@@ -33,6 +163,79 @@ FALLBACK_MARKERS = {
 DISCOURSE_MARKERS = NLTK_FILLERS.union(FALLBACK_MARKERS)
 
 lexicon = Empath()
+
+
+# --- PROGRESS REPORTING ---
+
+# Ordered analysis stages and their rough share of total runtime. These turn the
+# multi-step analysis into a single monotonic 0-100 progress value so UIs (the
+# Streamlit app, notebooks) can show a status indicator while long texts are
+# processed. Tune the weights if the balance of work changes materially.
+ANALYSIS_STAGES = (
+    ("parse", "Parsing text with spaCy", 0.70),
+    ("extract", "Extracting tokens and sentences", 0.05),
+    ("semantics", "Running semantic analysis", 0.10),
+    ("phrases", "Counting repeated phrases", 0.05),
+    ("metrics", "Computing quantitative metrics", 0.05),
+    ("assessments", "Running qualitative assessments", 0.03),
+    ("vocabulary", "Collecting vocabulary and phrases", 0.02),
+)
+
+
+def _stage_boundaries(stages=ANALYSIS_STAGES):
+    """Map each stage key to ``(label, start_percent, end_percent)``."""
+    total = sum(weight for _, _, weight in stages)
+    boundaries = {}
+    elapsed = 0.0
+    for key, label, weight in stages:
+        start = 100.0 * elapsed / total
+        elapsed += weight
+        end = 100.0 * elapsed / total
+        boundaries[key] = (label, round(start, 1), round(end, 1))
+    return boundaries
+
+
+STAGE_BOUNDARIES = _stage_boundaries()
+
+
+class ProgressReporter:
+    """Translate internal stage reports into ``(label, percent)`` callbacks.
+
+    Callers pass an ``on_progress`` callback to :class:`StyleAnalyser` or
+    :func:`analyze_linguistic_style`. This class maps the internal stage
+    identifiers onto a single monotonic 0-100 percentage, so callers never need
+    to know the stage list and the value never goes backwards.
+    """
+
+    def __init__(self, callback=None):
+        """
+        Args:
+            callback (callable, optional): Called as ``callback(label, percent)``
+                where ``label`` is a human-readable stage name and ``percent`` is
+                a float between 0.0 and 100.0.
+        """
+        self._callback = callback
+        self._percent = 0.0
+
+    @property
+    def enabled(self):
+        """bool: Whether a callback is attached (reports are a no-op otherwise)."""
+        return self._callback is not None
+
+    def __call__(self, key, fraction=1.0):
+        """Report that stage ``key`` is ``fraction`` complete.
+
+        Args:
+            key (str): A stage key from :data:`ANALYSIS_STAGES`.
+            fraction (float): Completion within the stage, 0.0 to 1.0.
+        """
+        if self._callback is None:
+            return
+        label, start, end = STAGE_BOUNDARIES.get(key, (key, 0.0, 100.0))
+        fraction = max(0.0, min(1.0, fraction))
+        percent = max(self._percent, start + (end - start) * fraction)
+        self._percent = percent
+        self._callback(label, round(percent, 1))
 
 
 # --- UNIFIED ANALYZER CLASS ---
@@ -57,7 +260,7 @@ class StyleAnalyser:
         repeated_counts (Counter): Frequency counts of repeated n-grams (2-4 length).
     """
 
-    def __init__(self, text):
+    def __init__(self, text, memory_gb=None, on_progress=None):
         """
         Initializes the StyleAnalyser with input text.
 
@@ -66,16 +269,43 @@ class StyleAnalyser:
 
         Args:
             text (str): The raw text string to be analyzed.
+            memory_gb (float, optional): Temporary memory budget in gigabytes.
+                When provided, ``nlp.max_length`` is recalculated from it before
+                the text is processed.
+            on_progress (callable, optional): Called as ``on_progress(label, percent)``
+                as each analysis stage completes, for status indicators in UIs.
+
+        Raises:
+            TextTooLongError: If the text exceeds the character limit implied by
+                the current memory budget.
         """
+        self._progress = ProgressReporter(on_progress)
+        if memory_gb is not None:
+            configure_memory_budget(memory_gb)
+        check_text_length(text)
+        self._progress("parse", 0.0)
         self.text = text
         self.doc = nlp(text)
+        self._progress("parse", 1.0)
         self.words = [token.text for token in self.doc if not token.is_punct and not token.is_space]
         self.sentences = list(self.doc.sents)
         self.word_count = len(self.words)
         self.sentence_count = len(self.sentences)
         self.unique_words = set(w.lower() for w in self.words)
+        self._progress("extract", 1.0)
         self.empath_scores = lexicon.analyze(text, normalize=True) or {}
+        self._progress("semantics", 1.0)
         self.repeated_counts = self._get_repeated_ngram_counts()
+        self._progress("phrases", 1.0)
+
+    def report_progress(self, key, fraction=1.0):
+        """Report progress for a later analysis stage.
+
+        Args:
+            key (str): A stage key from :data:`ANALYSIS_STAGES`.
+            fraction (float): Completion within the stage, 0.0 to 1.0.
+        """
+        self._progress(key, fraction)
 
     def _get_ngrams(self, n):
         """
@@ -593,8 +823,22 @@ class StyleAnalyser:
 
 # --- MAIN ANALYSIS FUNCTION ---
 
-def analyze_linguistic_style(text):
-    analyzer = StyleAnalyser(text)
+def analyze_linguistic_style(text, memory_gb=None, on_progress=None):
+    """Analyse ``text`` and return the full linguistic-style profile.
+
+    Args:
+        text (str): The raw text string to analyze.
+        memory_gb (float, optional): Temporary memory budget in gigabytes,
+            forwarded to :class:`StyleAnalyser`.
+        on_progress (callable, optional): Called as ``on_progress(label, percent)``
+            as each analysis stage completes, for status indicators in UIs.
+
+    Returns:
+        dict: The ``quantitative``, ``qualitative`` and ``words`` sections, plus
+            a ``limits`` section reporting the input length, the configured
+            character limit and the memory budget behind it.
+    """
+    analyzer = StyleAnalyser(text, memory_gb=memory_gb, on_progress=on_progress)
     
     # Calculate Quantitative Values
     ttr = analyzer.get_ttr()
@@ -608,49 +852,63 @@ def analyze_linguistic_style(text):
     
     # Calculate Intent for alignment
     intent = analyzer.get_rhetorical_intent()
-    
+
+    quantitative = {
+        "type_token_ratio": ttr,
+        "mean_length_of_sentence": mls,
+        "punctuation_density": punct_density,
+        "discourse_marker_density": dm_density,
+        "hapax_legomena_ratio": hapax,
+        "formulaic_density": formulaic,
+        "modal_hedging_ratio": modal,
+        "flesch_reading_ease": readability,
+        "function_word_frequency": analyzer.get_function_word_frequencies()
+    }
+    analyzer.report_progress("metrics")
+
+    qualitative = {
+        "type_token_ratio_assessment":
+            analyzer.assess_ttr(ttr),
+        "mean_length_of_sentence_assessment":
+            analyzer.assess_mls(mls),
+        "punctuation_density_assessment":
+            analyzer.assess_punctuation_density(punct_density),
+        "discourse_marker_density_assessment":
+            analyzer.assess_discourse_marker_density(dm_density),
+        "hapax_legomena_ratio_assessment":
+            analyzer.assess_hapax_legomena_ratio(hapax),
+        "formulaic_density_assessment":
+            analyzer.assess_formulaic_density(formulaic),
+        "modal_hedging_ratio_assessment":
+            analyzer.assess_modal_ratio(modal),
+        "flesch_reading_ease_assessment":
+            analyzer.assess_flesch_reading_ease(readability),
+        "lexical_sophistication":
+            analyzer.get_lexical_sophistication(),
+        "syntactic_variety":
+            analyzer.get_syntactic_variety(),
+        "cohesive_harmony":
+            analyzer.get_cohesive_harmony(),
+        "rhetorical_intent":
+            intent,
+        "genre_alignment":
+            analyzer.get_genre_alignment(intent)
+    }
+    analyzer.report_progress("assessments")
+
+    words = {
+        "common_vocabulary": analyzer.get_common_vocabulary(),
+        "frequent_phrases": analyzer.get_frequent_phrases()
+    }
+    analyzer.report_progress("vocabulary")
+
     return {
-        "quantitative": {
-            "type_token_ratio": ttr,
-            "mean_length_of_sentence": mls,
-            "punctuation_density": punct_density,
-            "discourse_marker_density": dm_density,
-            "hapax_legomena_ratio": hapax,
-            "formulaic_density": formulaic,
-            "modal_hedging_ratio": modal,
-            "flesch_reading_ease": readability,
-            "function_word_frequency": analyzer.get_function_word_frequencies()
-        },
-        "qualitative": {
-            "type_token_ratio_assessment":
-                analyzer.assess_ttr(ttr),
-            "mean_length_of_sentence_assessment":
-                analyzer.assess_mls(mls),
-            "punctuation_density_assessment":
-                analyzer.assess_punctuation_density(punct_density),
-            "discourse_marker_density_assessment":
-                analyzer.assess_discourse_marker_density(dm_density),
-            "hapax_legomena_ratio_assessment":
-                analyzer.assess_hapax_legomena_ratio(hapax),
-            "formulaic_density_assessment":
-                analyzer.assess_formulaic_density(formulaic),
-            "modal_hedging_ratio_assessment":
-                analyzer.assess_modal_ratio(modal),
-            "flesch_reading_ease_assessment":
-                analyzer.assess_flesch_reading_ease(readability),
-            "lexical_sophistication":
-                analyzer.get_lexical_sophistication(),
-            "syntactic_variety":
-                analyzer.get_syntactic_variety(),
-            "cohesive_harmony":
-                analyzer.get_cohesive_harmony(),
-            "rhetorical_intent":
-                intent,
-            "genre_alignment":
-                analyzer.get_genre_alignment(intent)
-        },
-        "words": {
-            "common_vocabulary": analyzer.get_common_vocabulary(),
-            "frequent_phrases": analyzer.get_frequent_phrases()
+        "quantitative": quantitative,
+        "qualitative": qualitative,
+        "words": words,
+        "limits": {
+            "text_length": len(analyzer.text),
+            "max_length": get_max_length(),
+            "memory_budget_gb": memory_for_length(get_max_length())
         }
     }
