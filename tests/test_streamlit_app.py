@@ -1,14 +1,30 @@
 """End-to-end smoke tests for the Streamlit UI's length handling."""
 
+import json
+
 from streamlit.testing.v1 import AppTest
 
-from copyme import analyze_linguistic_style, build_pre_prompt, count_tokens
+from copyme import (
+    StyleAnalyser,
+    analyze_linguistic_style,
+    build_pre_prompt,
+    count_tokens,
+)
 
 APP = "streamlit_app.py"
 TIMEOUT = 180
 
 # 9 words, all distinct, and no repeated n-grams.
 SAMPLE = "This is a short sample. It has two sentences."
+
+# A 5-word sequence ("the quick brown fox jumps") repeated three times, so the
+# phrase slider has something to add at length 5 that length 4 cannot see.
+REPEATED = (
+    "The quick brown fox jumps. "
+    "We saw the quick brown fox jumps again. "
+    "The quick brown fox jumps often."
+)
+LONG_PHRASE = "the quick brown fox jumps"
 
 
 def _app():
@@ -58,9 +74,59 @@ def test_vocabulary_caption_reports_the_slice():
 
     assert list(at.exception) == []
     assert any(
-        c.value == "Most frequent 20% of distinct terms: 2 of 9 words and 0 of 0 phrases."
+        c.value
+        == "Most frequent 20% of distinct terms: 2 of 9 words and 0 of 0 "
+        "phrases (2\u20134 words long)."
         for c in at.caption
     )
+
+
+def test_phrase_length_slider_defaults_to_four_words():
+    at = _app()
+    assert list(at.exception) == []
+
+    slider = at.sidebar.slider[1]
+    assert slider.label == "Longest phrase (words)"
+    assert slider.value == 4
+    assert (slider.min, slider.max) == (2.0, 6.0)
+
+
+def test_phrase_slider_adds_longer_phrases_without_reparsing():
+    at = _app()
+    at.text_area[0].set_value(REPEATED)
+    at.sidebar.slider[0].set_value(100).run()  # keep every distinct phrase
+    at.button[0].click().run()
+
+    assert len(at.status) == 1  # the parse ran
+    captions = [c.value for c in at.caption]
+    assert any("phrases (2\u20134 words long)." in value for value in captions)
+    short = set(at.dataframe[1].value["term"])
+    assert LONG_PHRASE not in short
+
+    at.sidebar.slider[1].set_value(6).run()
+
+    # No parse on this rerun, but the longer phrase was picked up.
+    assert list(at.status) == []
+    captions = [c.value for c in at.caption]
+    assert any("phrases (2\u20136 words long)." in value for value in captions)
+    assert LONG_PHRASE in set(at.dataframe[1].value["term"])
+
+
+def test_phrase_slider_does_not_move_formulaic_density():
+    at = _app()
+    at.text_area[0].set_value(REPEATED)
+    at.button[0].click().run()
+
+    def density():
+        blocks = [json.loads(block.value) for block in at.json]
+        return [b["formulaic_density"] for b in blocks if "formulaic_density" in b]
+
+    before = density()
+    at.sidebar.slider[1].set_value(6).run()
+    after = density()
+
+    # Formulaic Density is pinned to 2-4 words, so the slider must not touch it.
+    assert before == after == [StyleAnalyser(REPEATED).get_formulaic_density()]
 
 
 def test_vocabulary_slider_rederives_without_reparsing():

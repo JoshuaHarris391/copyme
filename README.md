@@ -50,7 +50,7 @@ Streamlit will open the app at <http://localhost:8501>.
 1. Paste a sample of the author's writing into **Text to analyze** (a few paragraphs is enough; longer is better).
 2. Click **Generate linguistic profile**. A status container shows which stage is running (**Parsing text with spaCy**, then semantic analysis, metrics, and so on), a progress bar, and elapsed time; it collapses to *Analysis complete in Ns* when done.
 3. Inspect the three raw sections (**Quantitative**, **Qualitative**, **Vocabulary & Phrases**).
-4. Adjust **Keep the most frequent (%)** in the sidebar to control how much vocabulary is captured (see below). This re-derives the vocabulary from the cached parse, so it updates instantly rather than re-parsing the text.
+4. Adjust **Keep the most frequent (%)** and **Longest phrase (words)** in the sidebar to control how much vocabulary is captured (see below). Both re-derive from the cached parse, so they update instantly rather than re-parsing the text.
 5. Scroll to **Copyable Pre-Prompt**. A size indicator reports its character and token count, so you can check it fits the model's context window before pasting. Click the copy icon in the top-right of the block, and paste it as the first message of a fresh ChatGPT / Claude / Gemini chat.
 6. Then ask the LLM to write whatever you need — it will use the profile as a target style guide.
 
@@ -91,6 +91,21 @@ setting.
 The selection drives both the displayed tables and the vocabulary section of the
 pre-prompt, so lowering it produces a shorter, sharper style guide.
 
+### Phrase length
+
+The **Longest phrase (words)** slider sets how long a phrase may be, from 2 to
+6 words, defaulting to 4. Phrases are word sequences that repeat: at 2 the
+profile captures pairs like *of the*, and at 5 it can capture *in the end of
+the*. Longer sequences repeat far less often, so raising the slider mostly
+reshuffles the shorter candidates rather than adding long ones.
+
+**Formulaic Density is deliberately not affected.** That metric measures the
+proportion of the text made of repeated 2-4 word sequences and is scored against
+fixed bands, so letting a slider move it would make two profiles incomparable.
+The phrase list is configurable; the metric stays pinned to 2-4 words. The
+active length is recorded in `results["limits"]["max_phrase_words"]`, so a
+profile can always be reproduced.
+
 ## Programmatic use
 
 ```python
@@ -119,6 +134,7 @@ what lets the UI respond to the vocabulary slider without re-parsing:
 analyzer = StyleAnalyser(sample)          # expensive: runs SpaCy
 profile = build_profile(analyzer, vocabulary_percentile=20)   # cheap
 slimmer = build_profile(analyzer, vocabulary_percentile=5)    # also cheap
+longer_phrases = build_profile(analyzer, max_phrase_words=6)  # up to 6-word phrases
 ```
 
 `analyze_linguistic_style` returns `{"quantitative": {...}, "qualitative": {...}, "words": {...}, "limits": {...}}`.

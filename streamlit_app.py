@@ -4,7 +4,10 @@ import pandas as pd
 import streamlit as st
 
 from copyme import (
+    DEFAULT_MAX_PHRASE_WORDS,
     DEFAULT_VOCABULARY_PERCENTILE,
+    MAX_PHRASE_WORDS,
+    MIN_PHRASE_WORDS,
     StyleAnalyser,
     TextTooLongError,
     build_pre_prompt,
@@ -72,6 +75,26 @@ with st.sidebar:
         ),
     )
 
+    st.header("Phrases")
+    st.write(
+        "Phrases are repeated word sequences. Set how long they may get: 2 "
+        "counts pairs like \"of the\", 4 counts \"in the end of the\". Longer "
+        "sequences rarely repeat, so raising this mostly reshuffles the "
+        "shorter candidates."
+    )
+    max_phrase_words = st.slider(
+        "Longest phrase (words)",
+        min_value=MIN_PHRASE_WORDS,
+        max_value=MAX_PHRASE_WORDS,
+        value=DEFAULT_MAX_PHRASE_WORDS,
+        step=1,
+        help=(
+            "Applies to the phrase list and the pre-prompt. Formulaic Density "
+            "stays pinned to 2-4 word sequences so profiles remain comparable. "
+            "Changing this re-derives from the cached parse, so it is instant."
+        ),
+    )
+
 
 # The SpaCy parse is the expensive half of the analysis, so it runs only when
 # the button is pressed. Everything below re-derives from that cached parse, so
@@ -134,11 +157,16 @@ if st.button("Generate linguistic profile", type="primary"):
 
 if analysis is not None:
     analyzer = analysis["analyzer"]
-    results = build_profile(analyzer, vocabulary_percentile=vocabulary_percentile)
+    results = build_profile(
+        analyzer,
+        vocabulary_percentile=vocabulary_percentile,
+        max_phrase_words=max_phrase_words,
+    )
     pre_prompt = build_pre_prompt(results)
 
+    phrase_counts = analyzer.phrase_counts(max_phrase_words)
     vocabulary = summarise_vocabulary(
-        analyzer.word_counts, analyzer.repeated_counts, vocabulary_percentile
+        analyzer.word_counts, phrase_counts, vocabulary_percentile
     )
     words = vocabulary["common_vocabulary"]
     phrases = vocabulary["frequent_phrases"]
@@ -160,7 +188,8 @@ if analysis is not None:
     st.caption(
         f"Most frequent {vocabulary_percentile}% of distinct terms: "
         f"{len(words):,} of {len(analyzer.word_counts):,} words and "
-        f"{len(phrases):,} of {len(analyzer.repeated_counts):,} phrases."
+        f"{len(phrases):,} of {len(phrase_counts):,} phrases "
+        f"({MIN_PHRASE_WORDS}\u2013{max_phrase_words} words long)."
     )
 
     if not words and not phrases:

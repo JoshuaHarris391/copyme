@@ -239,6 +239,59 @@ class ProgressReporter:
         self._callback(label, round(percent, 1))
 
 
+# --- PHRASE LENGTH ---
+
+# The phrase list is configurable, but the Formulaic Density metric is not: it is
+# pinned to 2-4 word sequences so that two profiles stay comparable no matter
+# what the slider is set to. The default below therefore matches the metric.
+PHRASE_METRIC_N_RANGE = (2, 3, 4)
+
+MIN_PHRASE_WORDS = 2
+MAX_PHRASE_WORDS = 6
+DEFAULT_MAX_PHRASE_WORDS = max(PHRASE_METRIC_N_RANGE)
+
+
+def repeated_phrase_counts(
+    words, max_words=DEFAULT_MAX_PHRASE_WORDS, min_words=MIN_PHRASE_WORDS
+):
+    """Count n-grams that repeat, for phrase lengths from ``min_words`` to ``max_words``.
+
+    Only sequences occurring more than once are kept: a phrase that appears a
+    single time is not a phrase the author leans on. Longer sequences repeat
+    far less often than shorter ones, so raising ``max_words`` mostly adds
+    shorter candidates rather than long ones.
+
+    Args:
+        words (list[str]): Tokenised words, in order.
+        max_words (int): Longest sequence to count, in words.
+        min_words (int): Shortest sequence to count, in words.
+
+    Returns:
+        Counter: Repeated sequences, lowercased, mapped to their frequency.
+
+    Raises:
+        ValueError: If ``min_words`` is below 1, or ``max_words`` is below
+            ``min_words``.
+    """
+    if min_words < 1:
+        raise ValueError(f"min_words must be at least 1, got {min_words}")
+    if max_words < min_words:
+        raise ValueError(
+            f"max_words must be at least min_words, got {max_words} < {min_words}"
+        )
+
+    combined_counts = Counter()
+    for n in range(min_words, max_words + 1):
+        counts = Counter(
+            " ".join(words[i:i + n]).lower()
+            for i in range(len(words) - n + 1)
+        )
+        for gram, count in counts.items():
+            if count > 1:
+                combined_counts[gram] += count
+    return combined_counts
+
+
 # --- TOKEN COUNTING ---
 
 # Fallback tokeniser, used when ``tiktoken`` is not installed: one token per run
@@ -380,7 +433,10 @@ class StyleAnalyser:
         unique_words (set[str]): A set of unique words (case-insensitive) in the text.
         word_counts (Counter): Counts of each lowercased word.
         empath_scores (dict): Semantic category scores from the Empath lexicon.
-        repeated_counts (Counter): Frequency counts of repeated n-grams (2-4 length).
+        repeated_counts (Counter): Frequency counts of repeated n-grams. Pinned
+            to :data:`PHRASE_METRIC_N_RANGE` so Formulaic Density stays
+            comparable between profiles. Use :meth:`phrase_counts` for the
+            configurable phrase list.
     """
 
     def __init__(self, text, memory_gb=None, on_progress=None):
@@ -419,7 +475,8 @@ class StyleAnalyser:
         self._progress("extract", 1.0)
         self.empath_scores = lexicon.analyze(text, normalize=True) or {}
         self._progress("semantics", 1.0)
-        self.repeated_counts = self._get_repeated_ngram_counts()
+        self._phrase_cache = {}
+        self.repeated_counts = self.phrase_counts()
         self._progress("phrases", 1.0)
 
     def report_progress(self, key, fraction=1.0):
@@ -450,26 +507,41 @@ class StyleAnalyser:
         """
         Identifies and counts n-grams that appear more than once in the text.
 
-        This is used primarily for calculating Formulaic Density.
+        Kept for backwards compatibility; :meth:`phrase_counts` supersedes it.
 
         Args:
-            n_range (list[int], optional): A list of n-gram lengths to check. 
+            n_range (list[int], optional): Contiguous n-gram lengths to check.
                 Defaults to [2, 3, 4].
 
         Returns:
-            Counter: A dictionary-like object mapping repeated n-gram strings 
+            Counter: A dictionary-like object mapping repeated n-gram strings
                 to their frequency.
         """
         if n_range is None:
-            n_range = [2, 3, 4]
-        combined_counts = Counter()
-        for n in n_range:
-            ngrams = self._get_ngrams(n)
-            counts = Counter(ngrams)
-            for gram, count in counts.items():
-                if count > 1:
-                    combined_counts[gram] += count
-        return combined_counts
+            n_range = list(PHRASE_METRIC_N_RANGE)
+        return repeated_phrase_counts(self.words, max(n_range), min(n_range))
+
+    def phrase_counts(self, max_words=DEFAULT_MAX_PHRASE_WORDS, min_words=MIN_PHRASE_WORDS):
+        """
+        Counts repeated phrases from ``min_words`` up to ``max_words`` long.
+
+        Results are memoised per range. The vocabulary view re-derives its
+        phrase list every time a slider moves, while the parsed document stays
+        cached, so a repeat call for the same range must be free.
+
+        Args:
+            max_words (int): Longest sequence to count, in words.
+            min_words (int): Shortest sequence to count, in words.
+
+        Returns:
+            Counter: Repeated phrases mapped to their frequency.
+        """
+        key = (min_words, max_words)
+        if key not in self._phrase_cache:
+            self._phrase_cache[key] = repeated_phrase_counts(
+                self.words, max_words, min_words
+            )
+        return self._phrase_cache[key]
 
 
     # --- QUANTITATIVE METRICS ---
@@ -946,7 +1018,8 @@ class StyleAnalyser:
 
 # --- MAIN ANALYSIS FUNCTION ---
 
-def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE):
+def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE,
+                  max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
     """Assemble the full linguistic-style profile from a parsed analyser.
 
     This is the cheap half of the analysis: it reuses the tokens, sentences and
@@ -958,11 +1031,14 @@ def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE)
         vocabulary_percentile (float, optional): Percentage of the most frequent
             distinct terms to keep in the ``words`` section. Pass ``None`` for
             the legacy behaviour of the top ten words and phrases.
+        max_phrase_words (int, optional): Longest phrase to keep in the
+            ``words`` section, in words. Only affects the phrase list; Formulaic
+            Density stays pinned to :data:`PHRASE_METRIC_N_RANGE`.
 
     Returns:
         dict: The ``quantitative``, ``qualitative`` and ``words`` sections, plus
             a ``limits`` section reporting the input length, the configured
-            character limit and the memory budget behind it.
+            character limit, the memory budget behind it and the phrase length.
     """
     # Calculate Quantitative Values
     ttr = analyzer.get_ttr()
@@ -1020,14 +1096,16 @@ def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE)
     }
     analyzer.report_progress("assessments")
 
+    phrases = analyzer.phrase_counts(max_phrase_words)
+
     if vocabulary_percentile is None:
         words = {
             "common_vocabulary": analyzer.get_common_vocabulary(),
-            "frequent_phrases": analyzer.get_frequent_phrases()
+            "frequent_phrases": [phrase for phrase, _ in phrases.most_common(10)],
         }
     else:
         vocabulary = summarise_vocabulary(
-            analyzer.word_counts, analyzer.repeated_counts, vocabulary_percentile
+            analyzer.word_counts, phrases, vocabulary_percentile
         )
         words = {
             "common_vocabulary": [term for term, _ in vocabulary["common_vocabulary"]],
@@ -1042,13 +1120,15 @@ def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE)
         "limits": {
             "text_length": len(analyzer.text),
             "max_length": get_max_length(),
+            "max_phrase_words": max_phrase_words,
             "memory_budget_gb": memory_for_length(get_max_length())
         }
     }
 
 
 def analyze_linguistic_style(text, memory_gb=None, on_progress=None,
-                             vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE):
+                             vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE,
+                             max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
     """Analyse ``text`` and return the full linguistic-style profile.
 
     Args:
@@ -1060,11 +1140,17 @@ def analyze_linguistic_style(text, memory_gb=None, on_progress=None,
         vocabulary_percentile (float, optional): Percentage of the most frequent
             distinct terms to keep in the ``words`` section. Pass ``None`` for
             the legacy behaviour of the top ten words and phrases.
+        max_phrase_words (int, optional): Longest phrase to keep in the
+            ``words`` section, in words.
 
     Returns:
         dict: The ``quantitative``, ``qualitative`` and ``words`` sections, plus
             a ``limits`` section reporting the input length, the configured
-            character limit and the memory budget behind it.
+            character limit, the memory budget behind it and the phrase length.
     """
     analyzer = StyleAnalyser(text, memory_gb=memory_gb, on_progress=on_progress)
-    return build_profile(analyzer, vocabulary_percentile=vocabulary_percentile)
+    return build_profile(
+        analyzer,
+        vocabulary_percentile=vocabulary_percentile,
+        max_phrase_words=max_phrase_words,
+    )

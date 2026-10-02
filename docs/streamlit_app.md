@@ -41,6 +41,14 @@ The knob is proportional rather than absolute, so the same setting yields a hand
 
 The selection drives both the vocabulary tables and the vocabulary section of the pre-prompt.
 
+## Phrase length
+
+The **Longest phrase (words)** slider sets the maximum phrase length, from 2 to 6 words, defaulting to 4. Phrases are repeated word sequences, so 2 captures pairs like *of the* while 5 can capture *in the end of the*. Longer sequences repeat far less often, so raising the slider mostly reshuffles the shorter candidates.
+
+The slider changes the phrase list and the pre-prompt. It deliberately does **not** change Formulaic Density: that metric measures the proportion of the text made of repeated 2-4 word sequences and is scored against fixed bands, so letting a slider move it would make profiles incomparable. The metric stays pinned to 2-4 words, whatever the slider says. The active length is recorded in `results["limits"]["max_phrase_words"]` for reproducibility.
+
+Like the vocabulary slider, this re-derives from the cached parse. Repeat calls for the same range are memoised on the analyser, so moving the slider costs a few milliseconds even on a long document.
+
 ## Why the slider does not re-parse
 
 Parsing is the expensive half of the analysis — roughly 4 seconds for a 199,000-character sample — while re-selecting the vocabulary costs milliseconds. The app therefore keeps the parsed `StyleAnalyser` in `st.session_state` and calls `build_profile` again whenever a control changes, so moving the slider is instant instead of re-running SpaCy.

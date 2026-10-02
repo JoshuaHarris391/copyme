@@ -1,8 +1,12 @@
 from .analyser import (
     ANALYSIS_STAGES,
     CHARS_PER_GB,
+    DEFAULT_MAX_PHRASE_WORDS,
     DEFAULT_MEMORY_GB,
     DEFAULT_VOCABULARY_PERCENTILE,
+    MAX_PHRASE_WORDS,
+    MIN_PHRASE_WORDS,
+    PHRASE_METRIC_N_RANGE,
     ProgressReporter,
     StyleAnalyser,
     TextTooLongError,
@@ -15,6 +19,7 @@ from .analyser import (
     max_length_for_memory,
     memory_budget_from_env,
     memory_for_length,
+    repeated_phrase_counts,
     summarise_vocabulary,
     top_fraction,
 )
@@ -43,4 +48,9 @@ __all__ = [
     "build_profile",
     "count_tokens",
     "estimate_tokens",
+    "repeated_phrase_counts",
+    "DEFAULT_MAX_PHRASE_WORDS",
+    "MIN_PHRASE_WORDS",
+    "MAX_PHRASE_WORDS",
+    "PHRASE_METRIC_N_RANGE",
 ]
