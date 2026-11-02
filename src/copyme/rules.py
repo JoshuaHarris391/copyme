@@ -180,7 +180,10 @@ def _frequency(per_1k, words_per_paragraph):
 
     every = 1000.0 / per_1k
     if every >= 1000:
-        return f"once every {every / 1000:.1f} thousand words"
+        # Rounded to the nearest 500 and written in figures. "once every 1.5
+        # thousand words" is how the arithmetic comes out and not how anyone
+        # says it.
+        return f"once every {int(round(every / 500) * 500):,} words"
     return f"roughly every {int(round(every / 50) * 50) or 50} words"
 
 

@@ -49,14 +49,22 @@ cannot be automated. Until it does, these ship as intuitions with defaults: the
 0.4/0.4/0.2 selection weights, whether Compact carries passages, the three-occurrence
 masking threshold, the twelve-word copying threshold. See [../evals/](../evals/).
 
-**The baseline is provisional.** Hand-written, about 4,000 words against an intended few
-hundred thousand of real model output. `scripts/build_baseline.py --check` reports 24 of
-36 feature spreads above the 5% stability tolerance. Rule suppression is therefore
-conservative and some salience figures are inflated. The refresh procedure is in
+**The baseline is measured, and 15 of 36 spreads have not converged.** It is sampled
+from 1,152 generated passages, 391,398 words of `claude-sonnet-5` answering plain
+questions with no style instruction. Every feature driving a substantive rule has
+settled; what has not are the near-zero-frequency features (emoji, exclamations,
+ellipses, semicolons), whose spreads are set by a handful of outlier passages and stay
+noisy however large the corpus gets. They are named per feature in `baseline.json`.
+
+This replaced the hand-written corpus and corrected a real error rather than merely
+adding precision: the old passages were single paragraphs, which gave
+`paragraph_sentences_median` a large false salience for every author. It now suppresses
+correctly, because the model's real default is 3.0 sentences a paragraph and most
+authors sit near it. The refresh procedure is in
 [../how-to/refresh-the-baseline.md](../how-to/refresh-the-baseline.md).
 
-Neither blocks use of the tool. Both bound how much weight its numbers can carry, which
-is why the README, the app and the baseline file all say so.
+The blind test still bounds how much weight copyme's output can carry, which is why the
+README and [../evals/](../evals/) both say so.
 
 ## Notes
 

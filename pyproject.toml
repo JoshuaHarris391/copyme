@@ -40,7 +40,12 @@ dev = [
     # Validates the exported Character Card V2 against the schema fixture in
     # tests/fixtures. Declared explicitly rather than relied on through
     # Streamlit, which happens to pull it in today.
-    "jsonschema (>=4.0.0,<5.0.0)"
+    "jsonschema (>=4.0.0,<5.0.0)",
+    # Needed by scripts/generate_baseline_corpus.py, and by the live contrastive
+    # tier. A dev dependency rather than a runtime one: the library imports it
+    # lazily and degrades to the static tier without it, and no part of copyme
+    # that a user touches requires an API key.
+    "anthropic (>=0.40.0)"
 ]
 
 [tool.pytest.ini_options]

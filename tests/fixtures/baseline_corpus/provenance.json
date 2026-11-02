@@ -1,15 +1,34 @@
 {
-  "status": "provisional",
-  "source": "Hand-written in assistant register by the maintainer",
-  "model": null,
-  "prompt_set": null,
+  "status": "measured",
+  "source": "Generated assistant-register responses to plain user questions",
+  "model": "claude-sonnet-5",
+  "prompt_set": {
+    "topics": 202,
+    "question_shapes": 8,
+    "unique_combinations": 1616,
+    "shuffle_seed": 20261102,
+    "script": "scripts/generate_baseline_corpus.py"
+  },
+  "generation": {
+    "no_system_prompt": true,
+    "no_style_instruction": true,
+    "max_tokens": 1500,
+    "truncated_responses": "discarded, not trimmed"
+  },
   "created": "2026-11-02",
-  "passages": 20,
-  "approximate_words": 4000,
-  "target_words": 300000,
+  "passages": 1152,
+  "approximate_words": 391398,
+  "inclusion_filters": {
+    "min_passage_words": 60,
+    "max_bullet_share": 0.4,
+    "rejected": {
+      "mostly a list": 449,
+      "stop_reason=max_tokens": 2
+    }
+  },
   "known_limitations": [
-    "Roughly two orders of magnitude smaller than the intended corpus, so feature spreads are wider than they should be and rule suppression is conservative.",
-    "One person's impression of assistant register rather than a sample of real model output.",
-    "Subject matter is narrow: software and technical explanation. Register features are broadly subject-independent, but opener and vocabulary features may be skewed."
+    "A single model and a single point in time. The baseline is what this model wrote on this date; another model's defaults differ, which is why every profile records the baseline version.",
+    "Responses that were mostly bullet lists were excluded, because copyme's features are prose features and a list has no paragraph shape to measure. This makes the baseline a prose baseline specifically.",
+    "Prompts are questions, so the register is explanatory. Model output in other modes -- drafting, summarising to a brief, writing in a persona -- is not represented."
   ]
 }

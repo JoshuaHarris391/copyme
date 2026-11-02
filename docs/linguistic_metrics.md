@@ -74,6 +74,14 @@ comparison can be re-run rather than taken on trust, and the test that chose it 
 
 A feature within **half a standard deviation** of the generic-prose baseline produces no
 rule at all: the model's default is already right, and every extra line dilutes the ones
-that matter. The baseline is currently **provisional**, which makes suppression
-conservative — see
+that matter.
+
+The baseline is sampled from 391,398 words of real model output. Some of its numbers are
+worth knowing, because they are what every author is compared against: the model's
+default mean sentence is **25.2 words**, its median paragraph is **3.0 sentences**, it
+contracts **38%** of the time, and its closing sentence runs **29.1 words** — longer than
+its median, which is the summarising-closer habit in measured form.
+
+21 of 36 spreads have converged, including every feature above that renders a
+substantive rule. See
 [how-to/refresh-the-baseline.md](how-to/refresh-the-baseline.md).

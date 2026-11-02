@@ -100,22 +100,33 @@ def summarise(rows):
 
 
 def stability(rows):
-    """Compare the spreads of the corpus halves.
+    """Compare the spreads of the corpus halves, feature by feature.
 
-    The question this answers is whether the corpus is large enough. If adding
-    the second half materially changed the spreads, it is not.
+    The question this answers is whether the corpus is large enough for each
+    feature's spread to be trusted. If adding the second half materially changed
+    a spread, it is not -- and because the spread is the denominator of every
+    z-score, an unreliable spread means unreliable rule suppression for that one
+    feature.
+
+    The report carries the means and spreads, not only the percentage, because
+    the percentage alone is misleading for a rare feature. A feature occurring
+    0.05 times per 1,000 words can show a 34% difference between halves while
+    moving by almost nothing in absolute terms, and such a feature needs far
+    more data to converge than a common one does. Whether that matters is a
+    judgement about the feature, so the numbers needed to make it are printed.
 
     Args:
         rows (list[dict]): Per-passage scalar dictionaries.
 
     Returns:
-        tuple[float, list[str]]: The worst relative difference, and the names of
-            the features that exceeded :data:`STABILITY_TOLERANCE`.
+        tuple[float, list[dict]]: The worst relative difference, and a record
+            per feature that exceeded :data:`STABILITY_TOLERANCE`, worst first.
     """
     if len(rows) < 4:
-        return float("inf"), ["corpus too small to split"]
+        return float("inf"), [{"feature": "corpus too small to split"}]
 
     middle = len(rows) // 2
+    means, overall = summarise(rows)
     _, first = summarise(rows[:middle])
     _, second = summarise(rows[middle:])
 
@@ -129,7 +140,17 @@ def stability(rows):
         difference = abs(a - b) / scale
         worst = max(worst, difference)
         if difference > STABILITY_TOLERANCE:
-            unstable.append(f"{name} ({difference:.0%})")
+            unstable.append(
+                {
+                    "feature": name,
+                    "relative_difference": round(difference, 4),
+                    "mean": means[name],
+                    "spread": overall[name],
+                    "spread_first_half": a,
+                    "spread_second_half": b,
+                }
+            )
+    unstable.sort(key=lambda row: -row["relative_difference"])
     return worst, unstable
 
 
@@ -190,12 +211,17 @@ def main(argv=None):
     print(f"\nStability: worst spread difference between halves is {worst:.0%}")
     if unstable:
         print(
-            f"  {len(unstable)} features above the {STABILITY_TOLERANCE:.0%} "
-            f"tolerance; the corpus is too small for these spreads to be "
-            f"trusted:\n    " + "\n    ".join(unstable[:10])
+            f"  {len(unstable)} of {len(FEATURE_NAMES)} features above the "
+            f"{STABILITY_TOLERANCE:.0%} tolerance. Their spreads are not yet "
+            f"converged, so rule suppression on these is less reliable than on "
+            f"the rest:\n"
         )
-        if len(unstable) > 10:
-            print(f"    ... and {len(unstable) - 10} more")
+        print(f"    {'feature':32} {'diff':>6} {'mean':>10} {'spread':>10}")
+        for row in unstable:
+            print(
+                f"    {row['feature']:32} {row['relative_difference']:6.0%} "
+                f"{row['mean']:10.4f} {row['spread']:10.4f}"
+            )
 
     if args.check:
         return 0
@@ -214,6 +240,7 @@ def main(argv=None):
             "worst_half_difference": round(worst, 4) if worst != float("inf") else None,
             "tolerance": STABILITY_TOLERANCE,
             "features_above_tolerance": len(unstable),
+            "unstable_features": unstable,
         },
         "features": list(FEATURE_NAMES),
         "means": means,

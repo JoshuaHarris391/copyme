@@ -57,9 +57,17 @@ def test_the_baseline_contains_no_text(baseline):
                 walk(item, f"{path}[{index}]")
         elif isinstance(value, str):
             # The only strings allowed are metadata: feature names, the
-            # version, the status, a date, and the corpus description.
+            # version, the status, a date, the corpus description and the
+            # per-feature stability record.
             assert path.startswith(
-                ("root.features", "root.version", "root.status", "root.generated", "root.corpus")
+                (
+                    "root.features",
+                    "root.version",
+                    "root.status",
+                    "root.generated",
+                    "root.corpus",
+                    "root.stability",
+                )
             ), f"unexpected text at {path}: {value!r}"
             assert len(value) < 200, f"text at {path} is long enough to be prose"
 
@@ -78,21 +86,87 @@ def test_the_baseline_covers_every_shipped_feature(baseline):
         assert name in baseline.spreads, f"{name} has no baseline spread"
 
 
-def test_the_baseline_declares_itself_provisional(baseline):
-    """Being candid about this is load-bearing, not modesty.
+def test_the_baseline_is_measured_from_real_model_output(baseline):
+    """The baseline must describe a model, not someone's idea of one.
 
-    The corpus is roughly two orders of magnitude smaller than intended and is
-    one person's impression of assistant register rather than a sample of real
-    model output. The status drives a caption in the UI, so a user reading a
-    rule set knows how much weight it can carry.
+    It shipped first as 20 hand-written passages, and on several features that
+    was simply wrong: the passages were single paragraphs, which gave paragraph
+    length a large false salience for every author profiled against it. It is
+    now 1,152 generated passages, and the status is what the UI reads to decide
+    whether to caption a rule set with a warning.
     """
-    assert baseline.status == "provisional"
+    assert baseline.status == "measured"
+    assert baseline.passages > 1_000
 
     payload = json.loads(BASELINE_FILE.read_text())
-    assert payload["stability"]["features_above_tolerance"] > 0, (
-        "if the spreads have stabilised, the status should no longer be "
-        "provisional -- and this test should be updated to say so"
+    assert payload["corpus"]["model"], "the corpus must record which model it sampled"
+    assert payload["corpus"]["approximate_words"] > 300_000
+
+
+def test_every_feature_driving_a_substantive_rule_has_converged(baseline):
+    """Stability is per feature, and only some features matter much.
+
+    `--check` compares each feature's spread over the first half of the corpus
+    against the second half. A spread that moves when the corpus grows is a
+    spread that cannot be trusted, and because the spread is the denominator of
+    every z-score, an untrustworthy one means untrustworthy rule suppression for
+    that feature.
+
+    These are the features the most consequential rules are rendered from, so
+    this test is the line between "the baseline is good enough to suppress
+    rules" and "it is not". The features that remain unconverged are the
+    near-zero-frequency ones -- emoji, exclamations, ellipses -- where the spread
+    is set by a few outlier passages and is noisy however large the corpus gets.
+    """
+    payload = json.loads(BASELINE_FILE.read_text())
+    unconverged = {row["feature"] for row in payload["stability"]["unstable_features"]}
+
+    substantive = {
+        "sentence_length_q1",
+        "sentence_length_median",
+        "sentence_length_q3",
+        "sentence_length_cv",
+        "share_short_sentences",
+        "share_long_sentences",
+        "paragraph_sentences_median",
+        "contraction_rate",
+        "opener_conjunction_rate",
+        "comma_per_sentence",
+        "fragment_rate",
+        "discourse_marker_per_1k",
+        "closing_sentence_length",
+        "opening_sentence_length",
+    }
+
+    overlap = substantive & unconverged
+    assert overlap == set(), (
+        f"these features drive substantive rules and their spreads have not "
+        f"converged: {sorted(overlap)}"
     )
+
+
+def test_the_unconverged_features_are_recorded_rather_than_hidden(baseline):
+    """A caveat nobody can check is not a caveat.
+
+    15 of 36 spreads are still moving, and the honest thing is to name which,
+    with the numbers needed to judge whether it matters for a given author. A
+    single "provisional" flag conflated two different questions -- where the
+    corpus came from, and whether every spread had converged -- so the baseline
+    now answers them separately.
+    """
+    payload = json.loads(BASELINE_FILE.read_text())
+    stability = payload["stability"]
+
+    assert stability["tolerance"] == 0.05
+    assert stability["features_above_tolerance"] == len(stability["unstable_features"])
+
+    for row in stability["unstable_features"]:
+        assert row["feature"] in FEATURE_NAMES
+        # The absolute scale is what makes the percentage interpretable: a 70%
+        # difference on a feature averaging 0.1 per 1,000 words is a different
+        # matter from 70% on sentence length.
+        assert "mean" in row and "spread" in row
+        assert row["relative_difference"] > stability["tolerance"]
 
 
 def test_a_value_at_the_baseline_mean_is_not_distinct(baseline):

@@ -23,9 +23,10 @@ the prompt, the profile renders to five targets, and a scorer reports what drift
 Built is not the same as evidenced, and two gaps are worth knowing before trusting a
 number out of this tool:
 
-- **The generic-prose baseline is provisional** — hand-written and about two orders of
-  magnitude smaller than intended, so rule suppression is conservative and some
-  salience figures are inflated. See
+- **The generic-prose baseline is measured but not fully converged.** It is sampled
+  from 391,398 words of real model output, and every feature driving a substantive rule
+  has settled; 15 near-zero-frequency spreads (emoji, exclamations, ellipses,
+  semicolons) have not, and are named per feature in `baseline.json`. See
   [how-to/refresh-the-baseline.md](how-to/refresh-the-baseline.md).
 - **The blind evaluation has not been run**, because it needs three or more human
   readers per author. Several shipped parameters are therefore intuitions with defaults

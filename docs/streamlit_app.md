@@ -195,10 +195,15 @@ behalf.
 
 ## A caption worth reading
 
-While the shipped generic-prose baseline is provisional, the app says so beneath the
-profile. Rules are suppressed against that baseline, so the rule set will shift when it
-is replaced — see
+The app captions the profile whenever the shipped baseline is not fully measured. Rules
+are suppressed against that baseline, so the rule set shifts when it is replaced — see
 [how-to/refresh-the-baseline.md](how-to/refresh-the-baseline.md).
+
+The baseline currently ships as **measured**, from 391,398 words of real model output,
+so no caption appears. The 15 near-zero-frequency features whose spreads have not
+converged are recorded in `baseline.json` rather than surfaced in the UI, because the
+suppression decision on them is robust for any author who is not sitting exactly on the
+threshold.
 
 ## Notes
 - The app calls `copyme.build_profile(analyser, size=...)` and `copyme.build_pre_prompt`, plus `copyme.score` on the Score tab.

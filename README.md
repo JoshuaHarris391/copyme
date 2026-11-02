@@ -361,14 +361,25 @@ are no-ops.
 v2's code is built and tested. Two things about its *evidence* need stating plainly,
 because both affect how much weight the output can carry.
 
-**The generic-prose baseline is provisional.** Every rule copyme emits is a rule the
-model does not already follow, and the baseline is how "already" is defined. The shipped
-one is hand-written, about 4,000 words, against an intended few hundred thousand of real
-model output. `scripts/build_baseline.py` reports that 24 of 36 feature spreads have not
-stabilised at that size, and the baseline records it. The effect is that rule
-suppression errs towards emitting a rule rather than dropping one, and that some
-salience figures are inflated. Replacing it is a documented procedure:
-[`docs/how-to/refresh-the-baseline.md`](docs/how-to/refresh-the-baseline.md).
+**The generic-prose baseline is measured, with a named caveat.** Every rule copyme emits
+is a rule the model does not already follow, and the baseline is how "already" is
+defined. It is sampled from **1,152 generated passages, 391,398 words** of
+`claude-sonnet-5` answering plain questions with no style instruction
+(`scripts/generate_baseline_corpus.py`).
+
+21 of 36 feature spreads have converged, including **every feature that drives a
+substantive rule** — sentence length and its variation, paragraph length, contraction
+rate, conjunction openers, commas, fragments, discourse markers, closing sentences. The
+15 that have not are the near-zero-frequency features: emoji at 0.11 per 1,000 words,
+exclamations at 0.06, ellipses at 0.16, semicolons at 0.52. Those are rare events whose
+spread is set by a few outlier passages, so it stays noisy however large the corpus
+gets; suppression on them is robust except for an author sitting right at the threshold.
+The per-feature figures are in `baseline.json` under `stability.unstable_features`.
+
+This replaced a hand-written 4,000-word corpus, and the replacement corrected a real
+error rather than merely adding precision: the old passages were single paragraphs,
+which gave paragraph length a large false salience for every author. The refresh
+procedure is [`docs/how-to/refresh-the-baseline.md`](docs/how-to/refresh-the-baseline.md).
 
 **The blind evaluation has not been run.** v2 rests on published work about imitation in
 general, not on evidence about copyme in particular. The protocol that would produce
@@ -381,8 +392,9 @@ threshold, and the twelve-word copying threshold. Each is a parameter, so each c
 measured rather than argued about.
 
 What *is* measured: MATTR replaced type-token ratio on the evidence of a stability test
-across sample lengths (at most 5.7% drift against TTR's 46–61%), and a text scored
-against its own profile is in band on every rule.
+across sample lengths (at most 5.7% drift against TTR's 46–61%); a text scored against
+its own profile is in band on every rule; and the baseline above is sampled from real
+model output rather than assumed.
 
 The reasoning behind the design is in
 [`docs/product/vision.md`](docs/product/vision.md); progress is in
