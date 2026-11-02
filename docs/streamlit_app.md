@@ -97,7 +97,49 @@ rule the profile set, and checks that nothing was lifted.
 
 The report carries a footer in every render, and it is there for a reason: a passage can
 pass every band and still not sound right. The bands cover the habits copyme can
-measure. A blind read stays the arbiter.
+measure. A blind read stays the arbiter — and the **Blind test** page is where one is
+run.
+
+## The Blind test page
+
+A second page in the app, listed in the sidebar. It exists because the scorer above
+cannot settle copyme's actual claim: it checks whether a draft hits the measurements
+copyme itself chose, which is circular. The blind test asks people instead, by showing a
+reader a real passage and a generated one without saying which is which.
+
+It has its own page rather than a tab for a practical reason: a reader rating a packet
+has no writing sample to paste and no reason to wait for spaCy, and the profiler gates
+everything behind that parse.
+
+Three modes, matching the three roles in the protocol:
+
+| Mode | Who | What they get |
+|---|---|---|
+| **Build a packet** | The organiser | Two files: a packet to send out, and an answer key to keep |
+| **Rate a packet** | Each reader | The packet, a pick per pair, and a ballot file to send back |
+| **Tally the results** | The organiser | The pick rate, its confidence interval, and the breakdowns |
+
+Two things about it are deliberate.
+
+**The packet and the key are separate files.** The packet a reader receives contains the
+passages and no record of which side is real — the shuffle seed included, because the
+seed plus the published algorithm would be enough to reconstruct the answers. Blindness
+is therefore structural rather than a matter of the reader's discipline, which is not
+true of any single-file format.
+
+**Every result carries a confidence interval, and the gate is judged on it.** 10 pairs
+and 3 readers is 30 judgements, and a pick rate of 70% from 30 judgements has a 95%
+interval of roughly 52% to 84%. So a run whose point estimate sits at or under the 70%
+gate is *not* reported as meeting it unless the whole interval does; the verdict says
+there are too few judgements to call instead. Reading the point estimate alone is how a
+blind test gets over-interpreted, and the page is built to make that hard.
+
+Remember the direction: **a lower pick rate is better.** 50% is a coin flip and the
+ceiling of what imitation can achieve; 100% means readers spot the imitation every time.
+
+What the page cannot supply is the readers. The protocol asks for three or more per
+author who know that author's writing, and a run with fewer is labelled indicative
+rather than reported as a result. See [evals/](evals/).
 
 ## Status indicator
 While the analysis runs, the app shows a status container that reports the current stage, a progress bar, and the elapsed time. Two of the stages are new in v2 — **Choosing exemplars** and **Writing voice rules** — and the app opts into them by passing `V2_ANALYSIS_STAGES` to the analyser, so the bar is scaled for the work that is actually going to happen rather than stopping at 94%. Stages are reported by the analyser through the same `on_progress` callback the library exposes, so the UI and any notebook or script see identical progress values. When the run finishes the container collapses to *Analysis complete in Ns*; if the input is rejected for being too long it turns into an error state instead.

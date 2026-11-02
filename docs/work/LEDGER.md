@@ -5,7 +5,7 @@
 | 01-exemplars-and-rules | larger | code + tests + docs | — | `feat/v2-exemplars-and-rules` |
 | 02-separation-and-exports | larger | code + tests + docs | — | `feat/v2-exemplars-and-rules` |
 | 03-scorer-and-contrast | larger | code + tests + docs | — | `feat/v2-exemplars-and-rules` |
-| 04-live-loop-and-evaluation | larger | code + tests | run the blind protocol | `feat/v2-exemplars-and-rules` |
+| 04-live-loop-and-evaluation | larger | code + tests + the blind-test tooling | recruit readers and run it | `feat/v2-exemplars-and-rules` |
 
 ## Closed
 
@@ -15,7 +15,7 @@ deviation from this folder's own process and is recorded here rather than hidden
 
 ## State
 
-All four specs' code is built, tested and documented. 195 tests pass, of which the
+All four specs' code is built, tested and documented. 225 tests pass, of which the
 original 77 pass **unchanged** — `build_profile(analyser)` with no v2 arguments still
 returns the v1 dictionary.
 
@@ -32,6 +32,7 @@ What landed:
 | `profile.py` | The frozen `Profile`, the presets, serialisation |
 | `exports.py` | Five targets, two partials, the ceiling, the dual token count |
 | `scorer.py` | `score`, drift, the copying check |
+| `blind.py` | The blind test: packets, keys, ballots, the tally and its interval |
 | `contrastive.py` | Static notes; the live tier with an injected model call |
 | `cli.py` | `profile` / `render` / `score` / `card` |
 | `scripts/` | `generate_baseline_corpus.py`, `build_baseline.py`, `fetch_fixtures.py` |
@@ -44,10 +45,12 @@ Character Card V2 schema.
 
 Two things, both about evidence rather than code.
 
-**The blind protocol has not been run.** It needs three or more readers per author and
-cannot be automated. Until it does, these ship as intuitions with defaults: the
-0.4/0.4/0.2 selection weights, whether Compact carries passages, the three-occurrence
-masking threshold, the twelve-word copying threshold. See [../evals/](../evals/).
+**The blind protocol has not been run**, though it can now be run: `blind.py` and the
+app's Blind test page build the packets, collect ballots and tally the result. What is
+missing is readers — three or more per author, which cannot be automated. Until then
+these ship as intuitions with defaults: the 0.4/0.4/0.2 selection weights, whether
+Compact carries passages, the three-occurrence masking threshold, the twelve-word
+copying threshold. See [../evals/](../evals/).
 
 **The baseline is measured, and 15 of 36 spreads have not converged.** It is sampled
 from 1,152 generated passages, 391,398 words of `claude-sonnet-5` answering plain

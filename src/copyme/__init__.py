@@ -28,6 +28,18 @@ from .pre_prompt import build_pre_prompt, build_v1_pre_prompt
 
 # --- v2 ---
 from .baseline import Baseline, load_baseline
+from .blind import (
+    MIN_READERS,
+    RELEASE_GATE,
+    AnswerKey,
+    Ballot,
+    BlindPair,
+    BlindTestError,
+    Packet,
+    Tally,
+    build_packet,
+    tally,
+)
 from .contrastive import live_notes, static_notes
 from .exemplars import DEFAULT_WEIGHTS, Exemplar, Selection, select_exemplars
 from .exports import FORMATS, sillytavern_card, token_estimates, voice_card
@@ -67,6 +79,16 @@ __all__ = [
     "PHRASE_METRIC_N_RANGE",
     # --- v2 ---
     "Baseline",
+    "AnswerKey",
+    "Ballot",
+    "BlindPair",
+    "BlindTestError",
+    "MIN_READERS",
+    "Packet",
+    "RELEASE_GATE",
+    "Tally",
+    "build_packet",
+    "tally",
     "load_baseline",
     "Passage",
     "segment",

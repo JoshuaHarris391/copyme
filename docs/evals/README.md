@@ -16,6 +16,10 @@ is unrun for one reason: **step 4 needs three or more human readers per author**
 that cannot be automated or faked. An LLM judge may be collected alongside it; it
 decides nothing.
 
+The machinery to run it does now exist — `copyme.blind` and the app's **Blind test**
+page — so what is missing is readers, not tooling. A run with fewer than three readers
+is reported as indicative rather than as a result, by design.
+
 ## What has been measured
 
 These are the checks the test suite asserts, and they are the only quantitative claims
@@ -34,6 +38,8 @@ copyme currently makes about itself. They run on every pull request
 | Baseline spread convergence | 21 of 36 features inside the 5% tolerance, including **every** feature driving a substantive rule | `scripts/build_baseline.py --check` |
 | Remaining unconverged spreads | 15, all near-zero-frequency (emoji 0.11, exclamations 0.06, ellipses 0.16, semicolons 0.52 per 1,000 words) | `baseline.json`, `stability.unstable_features` |
 | `baseline.json` still matches the corpus it claims to describe | Passes on 1,152 passages and all 36 features | `scripts/build_baseline.py --verify` |
+| A blind-test packet leaks neither the answer key nor the shuffle seed | Passes, asserted on the serialised file a reader receives | `tests/test_blind.py` |
+| A pick rate at the gate with too few judgements is not reported as a pass | Passes: 70% from 30 judgements reaches 84%, and is reported as uncallable | `tests/test_blind.py` |
 
 On the last row: those are rare events whose spread is set by a few outlier passages, so
 it stays noisy however large the corpus gets. Suppression on them is robust for any
@@ -56,7 +62,14 @@ rather than argued about. Until the blind test runs, they are intuitions.
 
 ## Running it
 
-Steps 1 to 3 and step 5 are scriptable today. Step 4 needs people.
+**Step 4 now has a tool.** The app's **Blind test** page builds the packets, collects
+each reader's ballot and tallies the result, including the confidence interval the
+number is meaningless without — see
+[../streamlit_app.md](../streamlit_app.md#the-blind-test-page). It does not supply the
+readers, which remains the reason this is unrun.
+
+Steps 1 to 3 and step 5 are scriptable but not yet scripted: generating the held-out
+passages is still done by hand, then pasted into the page.
 
 1. For each golden author, hold out one whole work and profile the rest at Standard.
 2. Generate five passages per author on held-out topics, with the v1 pre-prompt and the

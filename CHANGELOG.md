@@ -4,6 +4,26 @@ Notable changes per release. Versions follow [semantic versioning](https://semve
 and the entries are grouped the way [Conventional Commits](https://www.conventionalcommits.org)
 types already group the history.
 
+## Unreleased
+
+### Added
+
+- **The blind pairwise test, in the app** (`copyme.blind`, `pages/1_Blind_test.py`). An
+  organiser pairs each real passage with a generated one and gets two files; readers
+  pick the passage they believe is genuine and return a ballot; the tally reports the
+  pick rate. This is the test that settles copyme's actual claim, which the scorer
+  cannot: scoring checks whether a draft hits the 36 measurements copyme itself chose,
+  so grading copyme against them is circular.
+
+  Two properties are deliberate. The packet and the answer key are **separate files**,
+  and the packet carries neither the answers nor the shuffle seed that would
+  reconstruct them, so blindness is structural rather than a matter of the reader's
+  discipline. And every result carries a **Wilson confidence interval**, with the
+  release gate judged on the whole interval: 30 judgements at a 70% pick rate reaches
+  to roughly 84%, so a thin run is reported as too thin to call rather than as a pass.
+
+  It supplies everything except the readers, so the evaluation remains unrun.
+
 ## 2.0.0
 
 The pre-prompt is inverted. The author's real passages became the payload, and the

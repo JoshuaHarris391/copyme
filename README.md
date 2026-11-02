@@ -127,6 +127,28 @@ format is instant.
 
 More UI-specific notes are in [`docs/streamlit_app.md`](docs/streamlit_app.md).
 
+### The Blind test page
+
+A second page in the sidebar runs the blind pairwise test: show a reader a real passage
+and a generated one, don't say which is which, and count how often they pick correctly.
+It builds the packets, collects ballots and tallies the result.
+
+It exists because **the scorer cannot settle copyme's claim.** Scoring checks whether a
+draft hits the 36 measurements copyme itself chose, so grading copyme against them is
+circular — it confirms the plumbing, not the voice. Only readers can judge the voice.
+
+Two properties worth knowing before trusting a number out of it:
+
+- **The packet and the answer key are separate files.** What a reader receives contains
+  no record of which side is real, nor the shuffle seed that would let them reconstruct
+  it. Blindness is structural, not a matter of the reader's discipline.
+- **A point estimate under the gate is not a pass.** 30 judgements at a 70% pick rate
+  has a 95% interval of roughly 52% to 84%, so the gate is judged on the whole interval
+  and a thin run is reported as too thin to call.
+
+A lower pick rate is better: 50% is a coin flip and the ceiling of imitation. The page
+supplies everything except the readers, which is why the evaluation is still unrun.
+
 ### Text length and the memory budget
 
 SpaCy's parser and NER models need roughly **1 GB of temporary memory per
@@ -424,11 +446,14 @@ src/copyme/
   profile.py             # The frozen Profile, the size presets, serialisation
   exports.py             # The five export targets and the two partials
   scorer.py              # Drift, ScoreReport, score
+  blind.py               # The blind pairwise test: packets, ballots, the tally
   contrastive.py         # Static and live known-failure notes
   cli.py                 # copyme profile / render / score / card
   metrics_dictionary.py  # v1 metric definitions (profile-only; not prompt content)
   pre_prompt.py          # build_pre_prompt, and the retained v1 renderer
 streamlit_app.py         # Streamlit UI
+pages/
+  1_Blind_test.py        # The blind test: build a packet, rate one, tally
 scripts/
   generate_baseline_corpus.py  # Generates the baseline corpus from a model
   build_baseline.py      # Regenerates baseline.json; --verify checks it matches
