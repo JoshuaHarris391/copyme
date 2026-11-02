@@ -163,7 +163,12 @@ contraction rules correctly appearing.
 
 ```bash
 poetry run python3 -m pytest -q
+poetry run python3 scripts/build_baseline.py --verify
 ```
+
+`--verify` recomputes everything from the corpus and exits non-zero if the committed
+`baseline.json` disagrees, which is what catches a corpus edited without a rebuild. CI
+runs it on every pull request, so a forgotten step 4 fails there rather than shipping.
 
 `tests/test_baseline.py` checks three things: that the baseline is measured from real
 model output and records which model, that every feature driving a substantive rule has

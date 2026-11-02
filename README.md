@@ -431,8 +431,9 @@ src/copyme/
 streamlit_app.py         # Streamlit UI
 scripts/
   generate_baseline_corpus.py  # Generates the baseline corpus from a model
-  build_baseline.py      # Regenerates baseline.json from the corpus
+  build_baseline.py      # Regenerates baseline.json; --verify checks it matches
   fetch_fixtures.py      # Downloads the golden samples, with provenance
+.github/workflows/       # Tests on 3.10/3.12/3.13, and the baseline check
 tests/fixtures/          # Golden samples, the baseline corpus, the card schema
 notebooks/               # Prototype notebooks (prototype.ipynb, prototype_v2.ipynb)
 docs/                    # Entry point; see docs/README.md

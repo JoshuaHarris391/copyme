@@ -19,8 +19,8 @@ decides nothing.
 ## What has been measured
 
 These are the checks the test suite asserts, and they are the only quantitative claims
-copyme currently makes about itself. There is no CI pipeline yet, so they run only when
-someone runs `poetry run python3 -m pytest`.
+copyme currently makes about itself. They run on every pull request
+(`.github/workflows/tests.yml`), on Python 3.10, 3.12 and 3.13.
 
 | Check | Result | Where |
 |---|---|---|
@@ -33,6 +33,7 @@ someone runs `poetry run python3 -m pytest`.
 | The baseline is sampled from real model output | 1,152 passages, 391,398 words of `claude-sonnet-5`, no style instruction | `tests/fixtures/baseline_corpus/` |
 | Baseline spread convergence | 21 of 36 features inside the 5% tolerance, including **every** feature driving a substantive rule | `scripts/build_baseline.py --check` |
 | Remaining unconverged spreads | 15, all near-zero-frequency (emoji 0.11, exclamations 0.06, ellipses 0.16, semicolons 0.52 per 1,000 words) | `baseline.json`, `stability.unstable_features` |
+| `baseline.json` still matches the corpus it claims to describe | Passes on 1,152 passages and all 36 features | `scripts/build_baseline.py --verify` |
 
 On the last row: those are rare events whose spread is set by a few outlier passages, so
 it stays noisy however large the corpus gets. Suppression on them is robust for any

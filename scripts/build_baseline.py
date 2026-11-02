@@ -17,6 +17,7 @@ Usage:
     poetry run python3 scripts/build_baseline.py
     poetry run python3 scripts/build_baseline.py --bump
     poetry run python3 scripts/build_baseline.py --check
+    poetry run python3 scripts/build_baseline.py --verify
 """
 
 import argparse
@@ -174,6 +175,81 @@ def next_version(bump):
     return str(current + 1 if bump or current == 0 else current)
 
 
+# How far a recomputed mean or spread may sit from the committed one before
+# --verify calls it a mismatch. Tight enough to catch a corpus that changed
+# without a rebuild, loose enough to survive a spaCy patch release nudging a
+# tag or a sentence boundary.
+VERIFY_TOLERANCE = 1e-4
+
+
+def verify(rows, means, spreads):
+    """Check the committed baseline still matches what the corpus produces.
+
+    The gap this closes: ``baseline.json`` is a build artefact that is committed
+    by hand, so the corpus and the file it was computed from can drift apart
+    silently. Nothing else notices. A passage added to the corpus without a
+    rebuild leaves every z-score in the tool computed against numbers that no
+    longer describe the corpus, and rule suppression quietly uses a stale null
+    hypothesis.
+
+    This recomputes the whole thing and compares. It is the check a maintainer
+    would otherwise have to remember to run after step 4 of the refresh
+    procedure.
+
+    Args:
+        rows (list[dict]): Per-passage scalar dictionaries from the corpus.
+        means (dict): Feature means just recomputed from ``rows``.
+        spreads (dict): Feature spreads just recomputed from ``rows``.
+
+    Returns:
+        int: 0 if the committed file matches, 1 if it is missing or disagrees.
+    """
+    if not OUTPUT.exists():
+        print(f"\n{OUTPUT} does not exist. Run without --verify to build it.", file=sys.stderr)
+        return 1
+
+    committed = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    problems = []
+
+    if committed.get("passages") != len(rows):
+        problems.append(
+            f"passage count: corpus has {len(rows)}, "
+            f"baseline.json records {committed.get('passages')}"
+        )
+
+    for label, recomputed in (("mean", means), ("spread", spreads)):
+        stored = committed.get(f"{label}s", {})
+        for name in FEATURE_NAMES:
+            if name not in stored:
+                problems.append(f"{label} for {name} is missing from baseline.json")
+                continue
+            expected, actual = recomputed[name], stored[name]
+            scale = max(abs(expected), abs(actual), 1e-9)
+            if abs(expected - actual) / scale > VERIFY_TOLERANCE:
+                problems.append(
+                    f"{label} for {name}: corpus gives {expected:.6f}, "
+                    f"baseline.json records {actual:.6f}"
+                )
+
+    if problems:
+        print(
+            f"\nbaseline.json does not match the corpus ({len(problems)} "
+            f"discrepancies). Rebuild it with --bump:\n",
+            file=sys.stderr,
+        )
+        for problem in problems[:20]:
+            print(f"    {problem}", file=sys.stderr)
+        if len(problems) > 20:
+            print(f"    ... and {len(problems) - 20} more", file=sys.stderr)
+        return 1
+
+    print(
+        f"\nbaseline.json matches the corpus: {len(rows)} passages, "
+        f"{len(FEATURE_NAMES)} features, version {committed.get('version')}"
+    )
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -185,6 +261,14 @@ def main(argv=None):
         "--check",
         action="store_true",
         help="Report the stability check and write nothing.",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Recompute from the corpus and exit non-zero if the committed "
+            "baseline.json disagrees. Writes nothing."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -225,6 +309,9 @@ def main(argv=None):
 
     if args.check:
         return 0
+
+    if args.verify:
+        return verify(rows, means, spreads)
 
     payload = {
         "version": next_version(args.bump),
