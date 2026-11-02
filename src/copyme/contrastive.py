@@ -28,6 +28,13 @@ Two constraints hold in both tiers:
 
 from .baseline import SUPPRESSION_THRESHOLD
 from .features import FEATURE_LABELS, comparative
+from .generate import held_out, imitation_prompt
+
+# The environment variable the Streamlit blind test reads. Separate from the
+# SDK's own ``ANTHROPIC_API_KEY`` so that running the app cannot pick up a key
+# the user set for something else: a blind-test run costs money and the user
+# should have said, by name, that copyme may spend it.
+API_KEY_VARIABLE = "COPYME_ANTHROPIC_API_KEY"
 
 # At most this many notes, ranked by how far the author sits from the baseline.
 # The 2025 reader study found naming specific "AI-ish" habits measurably helped,
@@ -113,6 +120,11 @@ def _held_out(profile, count=2):
     Using unselected passages is what stops the live tier measuring the model's
     ability to copy an exemplar it was just given.
 
+    Kept as a thin wrapper over :func:`copyme.generate.held_out`, which the
+    blind test needs publicly. The two must not drift apart: if this tier and
+    the blind test held out different passages, the drift this tier predicts and
+    the drift the test measures would be about different writing.
+
     Args:
         profile (copyme.profile.Profile): A built profile.
         count (int): How many to hold out.
@@ -120,11 +132,7 @@ def _held_out(profile, count=2):
     Returns:
         list[copyme.exemplars.Exemplar]: Held-out passages, best-ranked first.
     """
-    chosen = {exemplar.passage_index for exemplar in profile.exemplars}
-    return [
-        exemplar for exemplar in profile.ranking
-        if exemplar.passage_index not in chosen
-    ][:count]
+    return held_out(profile, count)
 
 
 def live_notes(profile, model_call, score_fn, model="claude-sonnet-5", count=2):
@@ -168,13 +176,10 @@ def live_notes(profile, model_call, score_fn, model="claude-sonnet-5", count=2):
     notes = []
     in_band = []
     for exemplar in held:
-        words = max(60, len(exemplar.text.split()))
-        draft = model_call(
-            f"{prompt}\n\nWrite about {words} words in this voice. "
-            f"Subject: whatever the following passage is about, but do not "
-            f"reuse its wording.\n\n{exemplar.text[:400]}",
-            words,
-        )
+        # Shared with the blind test rather than written twice, so the tier that
+        # predicts drift and the test that measures it ask for the same thing.
+        instruction, words = imitation_prompt(prompt, exemplar)
+        draft = model_call(instruction, words)
         if not draft or not draft.strip():
             continue
         report = score_fn(draft, profile)
@@ -248,3 +253,41 @@ def anthropic_model_call(model="claude-sonnet-5", api_key=None):
         )
 
     return call
+
+
+def model_call_from_env(model="claude-sonnet-5"):
+    """Build a ``model_call`` from the key in :data:`API_KEY_VARIABLE`.
+
+    Used by the blind test, which has no flags to fall back to and no business
+    asking a reader for a credential. The key is read, passed to the client and
+    then forgotten: it is never returned, logged, or written into a profile, a
+    packet, an export or a result file.
+
+    The variable is read here and handed to :func:`anthropic_model_call`
+    explicitly, rather than letting the SDK read its own ``ANTHROPIC_API_KEY``.
+    That is deliberate: a user who has a key in the environment for some other
+    tool has not thereby agreed to let a Streamlit page spend it.
+
+    Args:
+        model (str): The model id to generate with.
+
+    Returns:
+        callable: A ``model_call(prompt, max_words)``.
+
+    Raises:
+        LiveTierUnavailableError: If the variable is unset or the SDK is
+            missing. The message names the variable, because "no API key" sends
+            a user looking in the wrong place when two variables are in play.
+    """
+    import os
+
+    key = os.environ.get(API_KEY_VARIABLE, "").strip()
+    if not key:
+        raise LiveTierUnavailableError(
+            f"Generating passages needs an API key in {API_KEY_VARIABLE}. Set "
+            f"it in the shell you start the app from and reload this page. "
+            f"copyme does not read {API_KEY_VARIABLE.replace('COPYME_', '')}, "
+            f"so a key set for another tool will not be picked up by accident."
+        )
+
+    return anthropic_model_call(model=model, api_key=key)

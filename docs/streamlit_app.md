@@ -107,19 +107,53 @@ cannot settle copyme's actual claim: it checks whether a draft hits the measurem
 copyme itself chose, which is circular. The blind test asks people instead, by showing a
 reader a real passage and a generated one without saying which is which.
 
-It has its own page rather than a tab for a practical reason: a reader rating a packet
-has no writing sample to paste and no reason to wait for spaCy, and the profiler gates
-everything behind that parse.
+It has its own page rather than a tab for a practical reason: a reader judging
+comparisons has no writing sample to paste and no reason to wait for spaCy, and the
+profiler gates everything behind that parse.
 
-Three modes, matching the three roles in the protocol:
+Two modes:
 
 | Mode | Who | What they get |
 |---|---|---|
-| **Build a packet** | The organiser | Two files: a packet to send out, and an answer key to keep |
-| **Rate a packet** | Each reader | The packet, a pick per pair, and a ballot file to send back |
-| **Tally the results** | The organiser | The pick rate, its confidence interval, and the breakdowns |
+| **Run a blind test** | A reader | Generated comparisons, judged one at a time, then a pick rate and four files |
+| **Tally the results** | Whoever pools readers | One pick rate across several readers' ballots, with its confidence interval |
 
-Two things about it are deliberate.
+### Running one
+
+In the profiler, open **For the blind test** and copy the block without reading it. That
+is the profile JSON, and the instruction is not a formality: it names which passages are
+the author's own, so a reader who has read it will recognise them on the cards and
+measure their own memory rather than the profile.
+
+Paste it on the Blind test page, name yourself and the author, and press **Generate and
+start**. The app renders the prompt, asks the model to write one passage per round, and
+pairs each with a real passage. Then it shows one comparison at a time: two passages
+side by side, Left, Right or Skip, and Next.
+
+The generated side used to be produced by hand — render the prompt, paste it into a
+chat, ask for a passage, copy the reply back — sixty round trips for a full three-author
+run, which is why no run was ever recorded. That step is now the **Generate and start**
+button.
+
+What gets pasted is the JSON rather than the rendered prompt, and the reason is
+structural: the prompt carries only the passages the profile chose, and those are
+exactly the ones unusable as the real side of a comparison. A model asked to write on the
+subject of a passage sitting in its own instructions is being tested on recall. The JSON
+carries the whole passage ranking, so the page can render the prompt *and* draw real
+passages from the ones the prompt left out.
+
+Three things about it are deliberate.
+
+**Nothing is revealed until the run ends.** Per-card feedback would teach a reader the
+imitation's tells on card one and let them apply it to card nine, pushing the pick rate
+up for reasons that have nothing to do with the profile. The answer key is in session
+state from the moment generation finishes, and the judging screen renders no metric and
+no verdict — a run's own test suite asserts it. When the run ends, every card is opened
+up with the real side named, which is where the tells are worth learning.
+
+**The whole run is generated before any of it is judged.** So the key is complete and
+seeded before the first card appears, and the side each passage lands on is the same
+seeded coin flip a mailed-out packet uses.
 
 **The packet and the key are separate files.** The packet a reader receives contains the
 passages and no record of which side is real — the shuffle seed included, because the
@@ -140,6 +174,35 @@ ceiling of what imitation can achieve; 100% means readers spot the imitation eve
 What the page cannot supply is the readers. The protocol asks for three or more per
 author who know that author's writing, and a run with fewer is labelled indicative
 rather than reported as a result. See [evals/](evals/).
+
+Reaching three means three people each running their own test. Each run generates its
+own passages, so their packets differ and their ballots cannot be tallied against one
+key — the pick rates have to be pooled across runs, with each run's own result file
+kept. **Tally the results** still combines several ballots against a *single* packet,
+which is what to use when the same comparisons are judged by more than one person, or to
+re-score a run from its files.
+
+### What a run leaves behind
+
+Four files, the same four a mailed-out run produces:
+
+| File | What it is for |
+|---|---|
+| `<id>-result.json` | The number, its interval and the run's parameters. One per run in [evals/](evals/) |
+| `<id>-packet.json` | The comparisons, with no record of which side is real |
+| `<id>-key.json` | Which side was real, plus the shuffle seed |
+| `<id>-ballot-<reader>.json` | One reader's picks |
+
+### The API key
+
+Generation reads **`COPYME_ANTHROPIC_API_KEY`** from the environment the app was started
+in. There is no field for it in the UI, and it is never written into a profile, a packet,
+a result or a log line — the result records the model's *name* and nothing else.
+
+The variable is deliberately not the SDK's own `ANTHROPIC_API_KEY`: a key set in the
+shell for some other tool is not consent for a Streamlit page to spend it. The CLI's
+`--contrastive live` still uses `ANTHROPIC_API_KEY`, so the two surfaces read different
+names.
 
 ## Status indicator
 While the analysis runs, the app shows a status container that reports the current stage, a progress bar, and the elapsed time. Two of the stages are new in v2 — **Choosing exemplars** and **Writing voice rules** — and the app opts into them by passing `V2_ANALYSIS_STAGES` to the analyser, so the bar is scaled for the work that is actually going to happen rather than stopping at 94%. Stages are reported by the analyser through the same `on_progress` callback the library exposes, so the UI and any notebook or script see identical progress values. When the run finishes the container collapses to *Analysis complete in Ns*; if the input is rejected for being too long it turns into an error state instead.

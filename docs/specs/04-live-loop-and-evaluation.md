@@ -89,7 +89,11 @@ a table rather than prose.
 3. Score every passage. Record `in_band`, copied spans, and embedding similarity if the
    extra is installed.
 4. **Blind pairwise test:** 10 pairs per author (real against v2), 3 or more readers
-   who know the author. Record the pick rate.
+   who know the author. Record the pick rate. Step 4 is now tooled end to end by the
+   app's Blind test page, which generates each pair from a held-out passage rather than
+   having one pasted in by hand; it does not supply the readers. Because every run
+   generates its own passages, three readers means three runs and the pick rates pooled
+   across them.
 5. **Drift:** a 20-turn scripted conversation per author, scored at turns 1, 8, 16 and
    20, with and without voice-card re-pasting at turns 8 and 16.
 
@@ -117,8 +121,10 @@ Live tier
 
 - [ ] The loop runs once per profile and its output is cached in the JSON; a second
       render makes no API call.
-- [ ] The held-out passages are ones the selector did not choose, verified by identity
-      against the selection.
+- [x] The held-out passages are ones the selector did not choose, verified by identity
+      against the selection. `copyme.generate.held_out` is the single implementation,
+      shared by this tier and the blind test so the two cannot diverge;
+      `tests/test_generate.py` asserts the identity check against the selection.
 - [ ] The profile records the model the live tier ran against.
 - [ ] Rendering a live-tier profile for a different model surfaces a warning in both
       the UI and the CLI.

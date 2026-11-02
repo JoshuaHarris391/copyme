@@ -62,14 +62,19 @@ rather than argued about. Until the blind test runs, they are intuitions.
 
 ## Running it
 
-**Step 4 now has a tool.** The app's **Blind test** page builds the packets, collects
-each reader's ballot and tallies the result, including the confidence interval the
-number is meaningless without — see
-[../streamlit_app.md](../streamlit_app.md#the-blind-test-page). It does not supply the
-readers, which remains the reason this is unrun.
+**Step 4 is now one button.** The app's **Blind test** page takes the profile JSON,
+generates a passage per round against held-out passages, shows the comparisons one at a
+time without revealing anything until the run ends, and tallies the result with the
+confidence interval the number is meaningless without — see
+[../streamlit_app.md](../streamlit_app.md#the-blind-test-page). Generating the held-out
+passages used to be done by hand and pasted in, which is what kept this folder empty.
 
-Steps 1 to 3 and step 5 are scriptable but not yet scripted: generating the held-out
-passages is still done by hand, then pasted into the page.
+It still does not supply the readers, which is now the only reason this is unrun. The
+protocol asks for three or more per author, and each of them runs their own test:
+because every run generates its own passages, their packets differ and their pick rates
+are pooled across runs rather than tallied against one key.
+
+Steps 1 to 3 and step 5 remain scriptable but unscripted.
 
 1. For each golden author, hold out one whole work and profile the rest at Standard.
 2. Generate five passages per author on held-out topics, with the v1 pre-prompt and the

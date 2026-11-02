@@ -131,14 +131,28 @@ More UI-specific notes are in [`docs/streamlit_app.md`](docs/streamlit_app.md).
 
 A second page in the sidebar runs the blind pairwise test: show a reader a real passage
 and a generated one, don't say which is which, and count how often they pick correctly.
-It builds the packets, collects ballots and tallies the result.
 
 It exists because **the scorer cannot settle copyme's claim.** Scoring checks whether a
 draft hits the 36 measurements copyme itself chose, so grading copyme against them is
 circular — it confirms the plumbing, not the voice. Only readers can judge the voice.
 
-Two properties worth knowing before trusting a number out of it:
+The whole run happens in the app. In the profiler, open **For the blind test** and copy
+the block without reading it; paste it on the Blind test page and press **Generate and
+start**. The app writes one passage per round against the model named in
+`COPYME_ANTHROPIC_API_KEY`, pairs each with a real passage, and shows the comparisons
+one at a time. Previously the generated side was produced by hand in a separate chat and
+pasted back — sixty round trips for a full run, which is why the evaluation had never
+been run.
 
+Four properties worth knowing before trusting a number out of it:
+
+- **The real passage is always one the prompt left out.** The profile chose some of the
+  author's passages to carry; those are unusable here, because a model asked to write on
+  the subject of a passage in its own instructions is being tested on recall. The real
+  side comes from the passages the selector ranked and did not choose.
+- **Nothing is revealed until the run ends.** Feedback per card would teach a reader the
+  imitation's tells and inflate the rest of the run. The answer key stays sealed in
+  session state, and the judging screen renders no score at all.
 - **The packet and the answer key are separate files.** What a reader receives contains
   no record of which side is real, nor the shuffle seed that would let them reconstruct
   it. Blindness is structural, not a matter of the reader's discipline.
@@ -147,7 +161,8 @@ Two properties worth knowing before trusting a number out of it:
   and a thin run is reported as too thin to call.
 
 A lower pick rate is better: 50% is a coin flip and the ceiling of imitation. The page
-supplies everything except the readers, which is why the evaluation is still unrun.
+supplies everything except the readers — the protocol wants three or more per author,
+each running their own test — which is why the evaluation is still unrun.
 
 ### Text length and the memory budget
 
@@ -447,13 +462,14 @@ src/copyme/
   exports.py             # The five export targets and the two partials
   scorer.py              # Drift, ScoreReport, score
   blind.py               # The blind pairwise test: packets, ballots, the tally
+  generate.py            # Profile -> generated passages -> packet and answer key
   contrastive.py         # Static and live known-failure notes
   cli.py                 # copyme profile / render / score / card
   metrics_dictionary.py  # v1 metric definitions (profile-only; not prompt content)
   pre_prompt.py          # build_pre_prompt, and the retained v1 renderer
 streamlit_app.py         # Streamlit UI
 pages/
-  1_Blind_test.py        # The blind test: build a packet, rate one, tally
+  1_Blind_test.py        # The blind test: generate a run, judge it, tally
 scripts/
   generate_baseline_corpus.py  # Generates the baseline corpus from a model
   build_baseline.py      # Regenerates baseline.json; --verify checks it matches

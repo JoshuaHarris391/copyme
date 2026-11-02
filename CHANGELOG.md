@@ -8,21 +8,43 @@ types already group the history.
 
 ### Added
 
-- **The blind pairwise test, in the app** (`copyme.blind`, `pages/1_Blind_test.py`). An
-  organiser pairs each real passage with a generated one and gets two files; readers
-  pick the passage they believe is genuine and return a ballot; the tally reports the
-  pick rate. This is the test that settles copyme's actual claim, which the scorer
-  cannot: scoring checks whether a draft hits the 36 measurements copyme itself chose,
-  so grading copyme against them is circular.
+- **The blind pairwise test, in the app** (`copyme.blind`, `copyme.generate`,
+  `pages/1_Blind_test.py`). This is the test that settles copyme's actual claim, which
+  the scorer cannot: scoring checks whether a draft hits the 36 measurements copyme
+  itself chose, so grading copyme against them is circular.
 
-  Two properties are deliberate. The packet and the answer key are **separate files**,
-  and the packet carries neither the answers nor the shuffle seed that would
-  reconstruct them, so blindness is structural rather than a matter of the reader's
-  discipline. And every result carries a **Wilson confidence interval**, with the
-  release gate judged on the whole interval: 30 judgements at a 70% pick rate reaches
-  to roughly 84%, so a thin run is reported as too thin to call rather than as a pass.
+  The whole run happens in the app. Copy the profile JSON out of the profiler's **For
+  the blind test** block without reading it, paste it on the Blind test page, and press
+  Generate and start: the app renders the prompt, writes one passage per round, pairs
+  each with a real passage, and shows the comparisons one at a time. Previously the
+  generated side was produced by hand in a separate chat and pasted back, sixty round
+  trips for a full three-author run, which is why `docs/evals/` had never held a run.
+
+  Four properties are deliberate. The real side of every comparison is a passage the
+  prompt **left out**, because a model asked to write on the subject of a passage in its
+  own instructions is being tested on recall. **Nothing is revealed until the run
+  ends**, since feedback per card would teach a reader the imitation's tells and inflate
+  the rest of the run. The packet and the answer key are **separate files**, and the
+  packet carries neither the answers nor the shuffle seed that would reconstruct them.
+  And every result carries a **Wilson confidence interval**, with the release gate
+  judged on the whole interval: 30 judgements at a 70% pick rate reaches to roughly 84%,
+  so a thin run is reported as too thin to call rather than as a pass.
+
+  Generation reads `COPYME_ANTHROPIC_API_KEY` from the environment — deliberately not
+  the SDK's own `ANTHROPIC_API_KEY`, which the CLI still uses: a key set in the shell
+  for another tool is not consent for the app to spend it. No key reaches a profile, a
+  packet, a result or a log line; the result records the model's name only.
 
   It supplies everything except the readers, so the evaluation remains unrun.
+
+### Changed
+
+- The Blind test page's **Build a packet** and **Rate a packet** modes are replaced by a
+  single **Run a blind test** mode, which generates and judges in one session.
+  **Tally the results** is unchanged, and still pools several readers' ballots against
+  one packet. Reaching the protocol's three readers now means three people each running
+  their own test and the pick rates being pooled across runs, since every run generates
+  its own passages.
 
 ## 2.0.0
 

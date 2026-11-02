@@ -40,8 +40,15 @@ from .blind import (
     build_packet,
     tally,
 )
-from .contrastive import live_notes, static_notes
+from .contrastive import (
+    API_KEY_VARIABLE,
+    LiveTierUnavailableError,
+    live_notes,
+    model_call_from_env,
+    static_notes,
+)
 from .exemplars import DEFAULT_WEIGHTS, Exemplar, Selection, select_exemplars
+from .generate import build_live_run, generate_pairs, held_out, imitation_prompt
 from .exports import FORMATS, sillytavern_card, token_estimates, voice_card
 from .features import FEATURE_NAMES, FeatureSet, document_features, passage_features
 from .passages import MAX_PASSAGE_TOKENS, MIN_PASSAGE_TOKENS, Passage, segment
@@ -116,6 +123,13 @@ __all__ = [
     "score",
     "static_notes",
     "live_notes",
+    "API_KEY_VARIABLE",
+    "LiveTierUnavailableError",
+    "model_call_from_env",
+    "held_out",
+    "imitation_prompt",
+    "generate_pairs",
+    "build_live_run",
     "mask_names",
     "style_word_counts",
     "style_phrases",

@@ -1,19 +1,30 @@
-"""The blind pairwise test: build a packet, rate one, tally the result.
+"""The blind pairwise test: generate a run, judge it card by card, score it.
 
-This page is separate from the profiler because its users are different. A
-reader rating a packet should not have to paste a writing sample and wait for
-spaCy, and should never see anything that reveals which passage is real.
+This page is separate from the profiler because its job is different. The
+profiler measures; this settles whether the measuring was worth anything. A
+reader rating comparisons should not have to paste a writing sample and wait for
+spaCy, and must never see anything that reveals which passage is real.
 
-The three modes map onto the three roles in the protocol:
+Two modes, mapping onto the two things anyone actually does:
 
-- **Build a packet** -- the organiser pairs each real passage with a generated
-  one and gets two files: a packet to send out and an answer key to keep.
-- **Rate a packet** -- a reader opens the packet, picks the passage they
-  believe is genuine, and sends back a ballot.
-- **Tally** -- the organiser combines the key with the ballots.
+- **Run a blind test** -- paste the profile, let the app generate a passage per
+  round, and judge them one at a time. Nothing is revealed until the run ends.
+- **Tally the results** -- combine a packet, its key and the ballots from
+  several readers into one number with a confidence interval.
 
-Blindness is structural, not a matter of discipline: this page cannot reveal
-the answers in rating mode because the packet file does not contain them.
+Blindness here is structural rather than a matter of discipline. The whole run is
+generated up front, so the answer key is complete and seeded before the first
+comparison is shown; the key sits in session state and nothing on the judging
+screen reads it. And because the reveal is held back to the end of the run, a
+reader cannot learn the imitation's tells on card one and apply them to card
+nine -- which would push the pick rate up for reasons that have nothing to do
+with the profile.
+
+What gets pasted is the profile **JSON**, not the rendered prompt. The JSON
+carries the full passage ranking, so the page can both render the prompt to
+generate with and draw real passages from the ones the prompt left out. The
+rendered prompt carries only the chosen passages, and comparing against those
+would measure the model's ability to echo what it was just shown.
 """
 
 import json
@@ -21,20 +32,26 @@ import json
 import pandas as pd
 import streamlit as st
 
+# Imported as a module, not as a bound name: the tests replace
+# `model_call_from_env` to run the whole page with no network and no key, and a
+# `from ... import` binding would capture the original before they could.
+from copyme import contrastive
 from copyme.blind import (
     MIN_READERS,
     RELEASE_GATE,
-    TARGET_PAIRS_PER_AUTHOR,
     Ballot,
     BlindTestError,
-    build_packet,
     ballot_from_json,
     key_from_json,
     packet_from_json,
     tally,
 )
+from copyme.generate import DEFAULT_NOTE, build_live_run, held_out
+from copyme.profile import SIZE_PRESETS, Profile
 
 st.set_page_config(page_title="Blind test", page_icon="🎭")
+
+PROFILE_SCHEMA = "copyme/profile/2"
 
 st.title("Blind test")
 st.write(
@@ -54,11 +71,17 @@ st.info(
 
 mode = st.radio(
     "What are you doing?",
-    options=["Build a packet", "Rate a packet", "Tally the results"],
+    options=["Run a blind test", "Tally the results"],
     horizontal=True,
+    # Every widget on this page carries an explicit key. Without one, Streamlit
+    # derives an id from the widget's position, and this page swaps its whole
+    # body between three screens -- so a positional id can be reused by a
+    # different widget on the next pass, and state follows the position rather
+    # than the question.
+    key="blind_mode",
     help=(
-        "Build and tally are the organiser's jobs. Readers only need 'Rate a "
-        "packet' and the packet file you send them."
+        "Run a test to produce one reader's ballot. Tally combines the ballots "
+        "of several readers into a result."
     ),
 )
 
@@ -81,248 +104,655 @@ def download_json(label, payload, filename, **kwargs):
     )
 
 
-# --- Build a packet ---------------------------------------------------------
+def load_profile(text):
+    """Parse pasted profile JSON, or return why it could not be read.
 
-if mode == "Build a packet":
-    st.subheader("1. Pair each real passage with a generated one")
+    Args:
+        text (str): The pasted blob.
+
+    Returns:
+        tuple: ``(Profile, None)`` on success, ``(None, str)`` on failure. The
+            message names what was expected, in the style of the blind-test
+            file loaders, because the likeliest mistake is pasting the rendered
+            prompt instead of the JSON.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, (
+            f"That is not valid JSON ({exc}). Use the **json** export from the "
+            f"profiler — the block labelled for the blind test — rather than "
+            f"the prompt itself."
+        )
+
+    if not isinstance(payload, dict):
+        return None, "A profile must be a JSON object."
+
+    if payload.get("schema") != PROFILE_SCHEMA:
+        return None, (
+            f"This JSON is not a copyme profile. Expected one whose 'schema' is "
+            f"'{PROFILE_SCHEMA}'. If you pasted a packet or an answer key, those "
+            f"belong in the tally mode."
+        )
+
+    try:
+        return Profile.from_dict(payload), None
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"This profile could not be read: {exc}"
+
+
+def result_payload(packet, result, record):
+    """Assemble the one file per run that ``docs/evals/`` takes.
+
+    Args:
+        packet (copyme.blind.Packet): The packet judged.
+        result (copyme.blind.Tally): The scored result.
+        record (dict): What the generation run did.
+
+    Returns:
+        dict: The result file.
+    """
+    return {
+        "packet_id": packet.packet_id,
+        "judgements": result.judgements,
+        "correct": result.correct,
+        "pick_rate": result.pick_rate,
+        "interval": list(result.interval),
+        "readers": result.readers,
+        "enough_readers": result.enough_readers,
+        "meets_gate": result.meets_gate,
+        "by_author": {k: list(v) for k, v in result.by_author.items()},
+        "by_variant": {k: list(v) for k, v in result.by_variant.items()},
+        "verdict": result.verdict,
+        "run": record,
+    }
+
+
+def render_result(result):
+    """Render a tally's metrics, verdict and breakdowns.
+
+    Shared by the end of a live run and by tally mode, so a self-serve number
+    and a mailed-out one are reported in exactly the same terms.
+
+    Args:
+        result (copyme.blind.Tally): The scored result.
+    """
+    if result.meets_gate:
+        st.success(result.verdict, icon="✅")
+    elif not result.enough_readers:
+        st.warning(result.verdict, icon="⚠️")
+    else:
+        st.error(result.verdict, icon="📊")
+
+    rate_column, interval_column, readers_column = st.columns(3)
+    with rate_column:
+        st.metric("Pick rate", f"{result.pick_rate:.0%}", help="Lower is better.")
+    with interval_column:
+        st.metric(
+            "95% interval",
+            f"{result.interval[0]:.0%}–{result.interval[1]:.0%}",
+        )
+    with readers_column:
+        st.metric(
+            "Readers",
+            result.readers,
+            delta=None if result.enough_readers else f"{MIN_READERS} wanted",
+            delta_color="off",
+        )
+
     st.caption(
-        "For each comparison you need a passage genuinely by the author and "
-        "one a model wrote while following the profile. Use passages on topics "
-        "the profile never saw, or the model can pass by repeating what it was "
-        "given."
+        f"{result.correct} of {result.judgements} judgements identified "
+        f"the real author. The interval is a Wilson 95% interval: with "
+        f"samples this size it is wide, and reading the point estimate "
+        f"alone is how a blind test gets over-interpreted."
     )
 
-    drafts = st.session_state.setdefault("blind_drafts", [])
-
-    with st.form("add_pair", clear_on_submit=True):
-        author_column, variant_column = st.columns([3, 1])
-        with author_column:
-            author = st.text_input(
-                "Author",
-                help="Shown to the reader. The protocol asks for readers who know them.",
-            )
-        with variant_column:
-            variant = st.text_input(
-                "Prompt variant",
-                value="v2",
-                help=(
-                    "Which prompt produced the generated side. Never shown to "
-                    "the reader; it lets the tally compare v2 against v1."
-                ),
-            )
-        real = st.text_area("The real passage, by the author", height=160)
-        generated = st.text_area("The generated passage", height=160)
-
-        if st.form_submit_button("Add this pair", type="primary"):
-            if not real.strip() or not generated.strip():
-                st.warning("A comparison needs both passages.")
-            elif not author.strip():
-                st.warning("Name the author: the reader is told whose voice it is.")
-            else:
-                drafts.append(
-                    {
-                        "author": author.strip(),
-                        "variant": variant.strip() or "v2",
-                        "real": real,
-                        "generated": generated,
-                    }
-                )
-                st.rerun()
-
-    with st.expander("Or paste a list of pairs as JSON"):
-        st.caption(
-            "A JSON array of objects with `author`, `real`, `generated` and "
-            "optionally `variant`. Useful once passage generation is scripted."
+    if result.indistinguishable:
+        st.info(
+            "The interval reaches down to 50%, so readers cannot be "
+            "shown to have done better than guessing.",
+            icon="🪙",
         )
-        bulk = st.text_area("JSON array", height=140, key="blind_bulk")
-        if st.button("Add them all"):
-            try:
-                rows = json.loads(bulk)
-                if not isinstance(rows, list):
-                    raise ValueError("the top level must be an array")
-            except (json.JSONDecodeError, ValueError) as exc:
-                st.error(f"Could not read that as a JSON array: {exc}")
-            else:
-                drafts.extend(row for row in rows if isinstance(row, dict))
-                st.rerun()
 
-    if drafts:
-        st.subheader("2. Check the run")
-        summary = {}
-        for row in drafts:
-            key = (row.get("author", "unknown"), row.get("variant", "v2"))
-            summary[key] = summary.get(key, 0) + 1
+    if result.by_author:
+        st.subheader("By author")
+        st.caption(
+            "Imitation can work for one voice and fail for another, "
+            "which an aggregate hides."
+        )
         st.dataframe(
             pd.DataFrame(
                 [
-                    {"author": author, "variant": variant, "pairs": count}
-                    for (author, variant), count in sorted(summary.items())
+                    {
+                        "author": name,
+                        "pick rate": f"{rate:.0%}",
+                        "judgements": count,
+                    }
+                    for name, (rate, count) in result.by_author.items()
                 ]
             ),
             hide_index=True,
         )
 
-        thin = sorted(
-            {author for (author, _), count in summary.items() if count < TARGET_PAIRS_PER_AUTHOR}
-        )
-        if thin:
-            st.caption(
-                f"The protocol asks for about {TARGET_PAIRS_PER_AUTHOR} pairs "
-                f"per author. Fewer is still worth running, but the confidence "
-                f"interval will be wide. Short of that for: {', '.join(thin)}."
-            )
-
-        st.subheader("3. Build the two files")
+    if len(result.by_variant) > 1:
+        st.subheader("By prompt variant")
         st.caption(
-            "The **packet** goes to your readers and contains no answers. The "
-            "**key** stays with you. Keep them apart: that separation is what "
-            "makes the result mean anything."
+            "This is the comparison the protocol actually asks for: a "
+            "bare pick rate cannot say whether v2 improved anything."
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "variant": name,
+                        "pick rate": f"{rate:.0%}",
+                        "judgements": count,
+                    }
+                    for name, (rate, count) in result.by_variant.items()
+                ]
+            ),
+            hide_index=True,
         )
 
-        identifier_column, seed_column = st.columns(2)
-        with identifier_column:
-            packet_id = st.text_input("Packet name", value="run-1")
-        with seed_column:
-            seed_text = st.text_input(
-                "Shuffle seed (optional)",
-                help="Leave blank for a random one. It is recorded in the key.",
-            )
+
+def generate_run():
+    """Write a whole run from the pasted profile, and seal its answer key.
+
+    Reads its parameters back out of the keyed widgets rather than taking
+    arguments, because it is called from the top of the script -- before the
+    setup screen is drawn -- so that a successful run lands the user on card one
+    in the same pass they pressed the button.
+
+    Returns:
+        dict | None: The run state, or ``None`` with an error already rendered.
+            Returning ``None`` leaves the setup screen to draw below the error,
+            with everything the user typed still in place.
+    """
+    profile, problem = load_profile(st.session_state.get("blind_profile_json", ""))
+    if problem or profile is None:
+        st.error(problem or "Paste a profile first.")
+        return None
+
+    size = st.session_state.get("blind_size", profile.size)
+    author = (st.session_state.get("blind_author") or "").strip()
+    reader = (st.session_state.get("blind_reader") or "").strip()
+    variant = (st.session_state.get("blind_variant") or "v2").strip() or "v2"
+    model = (st.session_state.get("blind_model") or "claude-sonnet-5").strip()
+    rounds = int(st.session_state.get("blind_rounds", 10))
+
+    seed_text = (st.session_state.get("blind_seed") or "").strip()
+    try:
+        seed = int(seed_text) if seed_text else None
+    except ValueError:
+        seed = None
+        st.warning("The seed must be a whole number. A random one was used.")
+
+    try:
+        model_call = contrastive.model_call_from_env(model=model)
+    except contrastive.LiveTierUnavailableError as exc:
+        st.error(str(exc))
+        return None
+
+    with st.status("Writing the passages...", expanded=True) as status:
+        progress = st.progress(0.0, text="Starting...")
+
+        def on_progress(done, total, label):
+            progress.progress(done / total if total else 1.0, text=label)
 
         try:
-            seed = int(seed_text) if seed_text.strip() else None
-        except ValueError:
-            seed = None
-            st.warning("The seed must be a whole number. Using a random one.")
-
-        if st.button("Build packet and key", type="primary"):
-            try:
-                packet, key = build_packet(
-                    drafts,
-                    packet_id=packet_id.strip() or "run-1",
-                    seed=seed,
-                    note="Pick the passage you believe is genuinely by the author.",
-                )
-            except BlindTestError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state["blind_built"] = (packet, key)
-
-        built = st.session_state.get("blind_built")
-        if built:
-            packet, key = built
-            st.success(
-                f"Built **{len(packet.pairs)} pairs** covering "
-                f"{', '.join(packet.authors)}."
+            packet, key, record = build_live_run(
+                profile.at_size(size),
+                model_call,
+                rounds=rounds,
+                author=author,
+                packet_id=f"{author.lower().replace(' ', '-') or 'run'}-{variant}",
+                variant=variant,
+                size=size,
+                seed=seed,
+                model=model,
+                note=DEFAULT_NOTE,
+                on_progress=on_progress,
             )
-            packet_column, key_column = st.columns(2)
-            with packet_column:
+        except BlindTestError as exc:
+            status.update(label="Could not build the run", state="error")
+            st.error(str(exc))
+            return None
+        except Exception as exc:  # noqa: BLE001
+            # An API failure part-way through. Reported rather than swallowed: a
+            # user who has just paid for six calls needs to know which step
+            # broke, and that nothing was kept.
+            status.update(label="The model call failed", state="error")
+            st.error(
+                f"Generation stopped: {exc}. Nothing was saved; try again, or "
+                f"with fewer rounds."
+            )
+            return None
+
+        status.update(
+            label=f"Wrote {len(packet.pairs)} comparisons",
+            state="complete",
+            expanded=False,
+        )
+
+    st.session_state["blind_run"] = {
+        "packet": packet,
+        "key": key,
+        "record": record,
+        "reader": reader,
+        "picks": {},
+        "position": 0,
+        "finished": False,
+    }
+    return st.session_state["blind_run"]
+
+
+def request_run():
+    """Mark that the user pressed Generate, for the body to act on.
+
+    Every state change on this page goes through a callback like this one rather
+    than through ``st.rerun()``. A callback runs *before* the script body on the
+    next pass, so the body sees the new state and draws the right screen first
+    time. ``st.rerun()`` would instead abandon a pass that had already drawn the
+    old screen, which leaves the rendered page and the widget state briefly
+    disagreeing -- and makes the page untestable, because a test driving it
+    cannot tell which of the two passes it is looking at.
+    """
+    st.session_state["blind_pending"] = True
+
+
+def move(delta):
+    """Return a callback that steps the judging position by ``delta``.
+
+    Args:
+        delta (int): ``+1`` for the next card, ``-1`` for the previous one.
+
+    Returns:
+        callable: The callback.
+    """
+
+    def step():
+        run = st.session_state.get("blind_run")
+        if run:
+            run["position"] = max(0, run["position"] + delta)
+
+    return step
+
+
+def finish_run():
+    """Mark the run finished, which is the only thing that unseals the answers."""
+    run = st.session_state.get("blind_run")
+    if run:
+        run["finished"] = True
+
+
+def clear_run():
+    """Drop the run and every pick widget it created.
+
+    The pick radios are keyed by pair id, so without this their values would
+    survive into the next run and a pair id that happened to repeat would start
+    out already answered.
+    """
+    run = st.session_state.pop("blind_run", None)
+    if run:
+        for pair in run["packet"].pairs:
+            st.session_state.pop(f"blind_pick_{pair.pair_id}", None)
+
+
+# --- Run a blind test -------------------------------------------------------
+
+if mode == "Run a blind test":
+    # Popped, not read: the request is consumed by the pass that acts on it, so
+    # a later rerun cannot generate a second run from the same press.
+    pending = st.session_state.pop("blind_pending", False)
+    run = st.session_state.get("blind_run")
+
+    if run is None and pending:
+        run = generate_run()
+
+    # --- Set up -------------------------------------------------------------
+
+    if run is None:
+        st.subheader("1. Paste the profile — don't read it")
+        st.caption(
+            "In the profiler, open **For the blind test** and copy the block "
+            "without reading it. It names which passages are the author's own, "
+            "so reading it is how you spoil your own test. Nothing from it is "
+            "shown on this page."
+        )
+        pasted = st.text_area(
+            "The profile JSON",
+            height=140,
+            key="blind_profile_json",
+            placeholder="Paste here. It will look like a wall of JSON — that is right.",
+        )
+
+        profile = None
+        if pasted.strip():
+            profile, problem = load_profile(pasted)
+            if problem:
+                st.error(problem)
+
+        if profile is None:
+            st.caption(
+                "Waiting for a profile. Everything below appears once one is "
+                "pasted."
+            )
+        else:
+            st.subheader("2. Set up the run")
+            st.caption(
+                f"Profiled from **{profile.word_count:,} words**, built at "
+                f"**{profile.size}**. No passage or rule from it is displayed "
+                f"here."
+            )
+
+            size_column, rounds_column = st.columns(2)
+            with size_column:
+                size = st.selectbox(
+                    "Prompt size to test",
+                    options=list(SIZE_PRESETS),
+                    index=list(SIZE_PRESETS).index(
+                        profile.size if profile.size in SIZE_PRESETS else "standard"
+                    ),
+                    key="blind_size",
+                    help=(
+                        "Which size of prompt the model writes from. The "
+                        "release gate is set on Standard. A smaller size "
+                        "carries fewer of the author's passages and so leaves "
+                        "more of them free to compare against."
+                    ),
+                )
+
+            available = len(held_out(profile.at_size(size)))
+
+            with rounds_column:
+                # No max_value: it would have to track the size selector, and a
+                # stored value above a freshly lowered ceiling makes Streamlit
+                # raise. Asking for more than the sample affords is capped
+                # during generation instead, and reported in the run record.
+                rounds = st.number_input(
+                    "Rounds",
+                    min_value=1,
+                    value=min(10, max(1, available)),
+                    step=1,
+                    key="blind_rounds",
+                    help=(
+                        "One comparison per round, each from a different "
+                        "passage. The protocol asks for about 10 per author."
+                    ),
+                )
+
+            if available and rounds > available:
+                st.caption(
+                    f"You asked for {rounds} rounds and this profile affords "
+                    f"**{available}** at {size}. The run will be {available} "
+                    f"rounds long."
+                )
+
+            if available == 0:
+                st.error(
+                    f"At **{size}** this profile carries every passage the "
+                    f"sample had, so there is nothing left to compare against "
+                    f"that the model has not already been shown. Test a "
+                    f"smaller size, or profile a longer sample."
+                )
+            elif available < 10:
+                st.caption(
+                    f"This profile affords **{available}** round(s) at {size}: "
+                    f"the protocol asks for about 10 per author, so the "
+                    f"interval will be wide. A smaller size or a longer sample "
+                    f"gives more."
+                )
+
+            reader_column, author_column = st.columns(2)
+            with reader_column:
+                reader = st.text_input(
+                    "Your name or initials",
+                    key="blind_reader",
+                    help="A label so ballots can be told apart. Not an identity.",
+                )
+            with author_column:
+                author = st.text_input(
+                    "Author",
+                    key="blind_author",
+                    help=(
+                        "Shown to you on every card. The protocol asks for "
+                        "readers who know the author."
+                    ),
+                )
+
+            with st.expander("Model, prompt variant and seed"):
+                model_column, variant_column = st.columns([3, 1])
+                with model_column:
+                    model = st.text_input(
+                        "Model", value="claude-sonnet-5", key="blind_model"
+                    )
+                with variant_column:
+                    variant = st.text_input(
+                        "Variant",
+                        value="v2",
+                        key="blind_variant",
+                        help=(
+                            "Which prompt produced the generated side. Never "
+                            "shown on a card; it lets the tally compare v2 "
+                            "against v1."
+                        ),
+                    )
+                seed_text = st.text_input(
+                    "Shuffle seed (optional)",
+                    key="blind_seed",
+                    help="Leave blank for a random one. It is recorded in the key.",
+                )
+                st.caption(
+                    f"The key comes from **{contrastive.API_KEY_VARIABLE}** in "
+                    f"the environment this app was started in. It is never "
+                    f"written into a profile, a packet, a result or a log."
+                )
+
+                recorded_model = profile.provenance.get("contrastive_model")
+                if recorded_model and recorded_model != model:
+                    st.warning(
+                        f"This profile's corrections were measured against "
+                        f"**{recorded_model}**, and you are generating with "
+                        f"**{model}**. Corrections built against one model "
+                        f"transfer poorly to another, so the result is about "
+                        f"this pairing rather than about the profile."
+                    )
+
+            # Validation only: the seed is parsed again at generation time, out
+            # of session state. Flagged here so a typo is caught before the user
+            # pays for a run whose seed they will not be able to reproduce.
+            if seed_text.strip() and not seed_text.strip().lstrip("-").isdigit():
+                st.warning("The seed must be a whole number. A random one will be used.")
+
+            st.subheader("3. Generate the comparisons")
+            st.caption(
+                "The whole run is written before you judge any of it. That is "
+                "what keeps it blind: the answers exist, sealed, before you see "
+                "card one."
+            )
+
+            blocked = available == 0 or not author.strip() or not reader.strip()
+            if blocked and available:
+                st.caption("Fill in your name and the author's name to start.")
+
+            st.button(
+                "Generate and start",
+                type="primary",
+                disabled=blocked,
+                key="blind_go",
+                on_click=request_run,
+            )
+
+    # --- Judge --------------------------------------------------------------
+
+    elif not run["finished"]:
+        packet = run["packet"]
+        total = len(packet.pairs)
+        position = min(run["position"], total - 1)
+        pair = packet.pairs[position]
+
+        st.subheader(f"{position + 1} of {total}")
+        st.progress((position + 1) / total, text=f"Card {position + 1} of {total}")
+        st.markdown(f"Which of these is really by **{pair.author}**?")
+        st.caption(
+            "You will not be told whether you were right until the run ends. "
+            "Knowing after each card would teach you the imitation's tells and "
+            "push the score up for reasons that have nothing to do with the "
+            "profile."
+        )
+
+        left_column, right_column = st.columns(2)
+        with left_column:
+            st.caption("Left")
+            # Rendered as plain text, never Markdown: a stray asterisk or a
+            # heading surviving in one passage and not the other would sort them
+            # for the reader without either being read.
+            st.text(pair.left)
+        with right_column:
+            st.caption("Right")
+            st.text(pair.right)
+
+        pick_key = f"blind_pick_{pair.pair_id}"
+        if pick_key not in st.session_state:
+            st.session_state[pick_key] = "Skip"
+
+        choice = st.radio(
+            "Your pick",
+            options=["Left", "Right", "Skip"],
+            horizontal=True,
+            key=pick_key,
+            help="Skip anything you genuinely cannot judge; it is not counted against you.",
+        )
+        if choice == "Skip":
+            run["picks"].pop(pair.pair_id, None)
+        else:
+            run["picks"][pair.pair_id] = choice.lower()
+
+        st.divider()
+        back_column, next_column, abandon_column = st.columns(3)
+        with back_column:
+            st.button(
+                "← Back",
+                disabled=position == 0,
+                key="blind_back",
+                on_click=move(-1),
+            )
+        with next_column:
+            if position + 1 < total:
+                st.button(
+                    "Next →", type="primary", key="blind_next", on_click=move(1)
+                )
+            else:
+                st.button(
+                    "Finish and score",
+                    type="primary",
+                    key="blind_finish",
+                    on_click=finish_run,
+                )
+        with abandon_column:
+            st.button("Abandon this run", key="blind_abandon", on_click=clear_run)
+
+        st.caption(f"{len(run['picks'])} of {total} judged so far.")
+
+    # --- Score --------------------------------------------------------------
+
+    else:
+        packet = run["packet"]
+        key = run["key"]
+        record = run["record"]
+        ballot = Ballot(
+            reader=run["reader"] or "unnamed",
+            picks=dict(run["picks"]),
+            packet_id=packet.packet_id,
+        )
+
+        st.subheader("The result")
+        if not run["picks"]:
+            st.warning("Every card was skipped, so there is nothing to score.")
+        else:
+            result = tally(packet, key, [ballot])
+            render_result(result)
+
+            st.caption(
+                f"This is one reader, and the protocol asks for at least "
+                f"{MIN_READERS}. Reaching that means other readers running "
+                f"their own tests: each run generates its own passages, so "
+                f"their packets differ and their ballots cannot be tallied "
+                f"against this key. Pool the pick rates across runs, and record "
+                f"each run's own result file."
+            )
+
+            st.subheader("What each card was")
+            st.caption(
+                "Safe to read now. This is where you learn the tells — after "
+                "they can no longer bias the run."
+            )
+            for position, pair in enumerate(packet.pairs, start=1):
+                real_side = key.real_sides.get(pair.pair_id)
+                pick = run["picks"].get(pair.pair_id)
+                if pick is None:
+                    verdict = "skipped"
+                elif pick == real_side:
+                    verdict = "you were right"
+                else:
+                    verdict = "you were fooled"
+
+                with st.expander(f"{position}. The real one was on the {real_side} — {verdict}"):
+                    real_column, generated_column = st.columns(2)
+                    with real_column:
+                        st.caption(f"By {pair.author}")
+                        st.text(pair.side(real_side))
+                    with generated_column:
+                        st.caption(f"Generated ({record.get('model') or 'unknown model'})")
+                        other = "right" if real_side == "left" else "left"
+                        st.text(pair.side(other))
+
+            st.subheader("Keep the run")
+            st.caption(
+                "`docs/evals/` takes one result file per run, and a failing "
+                "number is still worth publishing. The packet and key are the "
+                "audit trail: they let anyone re-tally this run, or send the "
+                "same comparisons to another reader."
+            )
+            first_column, second_column = st.columns(2)
+            with first_column:
                 download_json(
-                    "⬇️ Packet — send to readers",
-                    packet.to_dict(),
-                    f"{packet.packet_id}-packet.json",
+                    "⬇️ Result",
+                    result_payload(packet, result, record),
+                    f"{packet.packet_id}-result.json",
                     type="primary",
                 )
-                st.caption("Contains no answers.")
-            with key_column:
+                download_json(
+                    "⬇️ Packet — no answers in it",
+                    packet.to_dict(),
+                    f"{packet.packet_id}-packet.json",
+                )
+            with second_column:
+                download_json(
+                    "⬇️ My ballot",
+                    ballot.to_dict(),
+                    f"{packet.packet_id}-ballot-{ballot.reader.replace(' ', '-')}.json",
+                )
                 download_json(
                     "⬇️ Answer key — keep this",
                     key.to_dict(),
                     f"{packet.packet_id}-key.json",
                 )
-                st.caption("Do not send this to a reader.")
 
-        if st.button("Clear all pairs"):
-            st.session_state["blind_drafts"] = []
-            st.session_state.pop("blind_built", None)
-            st.rerun()
-    else:
-        st.caption("No pairs yet. Add one above.")
+            with st.expander("What the generation did"):
+                st.json(record)
 
-
-# --- Rate a packet ----------------------------------------------------------
-
-elif mode == "Rate a packet":
-    st.subheader("Pick the passage you think is genuine")
-    uploaded = st.file_uploader("The packet file you were sent", type="json")
-
-    if uploaded is None:
-        st.caption(
-            "You need the packet file from whoever organised the test. It "
-            "contains the passages and nothing else — not even they can see "
-            "your picks until you send the ballot back."
-        )
-    else:
-        try:
-            packet = packet_from_json(uploaded.getvalue())
-        except BlindTestError as exc:
-            st.error(str(exc))
-        else:
-            reader = st.text_input(
-                "Your name or initials",
-                help="A label so ballots can be told apart. Not an identity.",
-            )
-            st.caption(
-                f"{len(packet.pairs)} comparisons. {packet.note} You may skip "
-                f"any you genuinely cannot judge — a skip is not counted as a "
-                f"wrong answer."
-            )
-
-            picks = st.session_state.setdefault("blind_picks", {})
-
-            for position, pair in enumerate(packet.pairs, start=1):
-                st.divider()
-                st.markdown(
-                    f"**{position} of {len(packet.pairs)}** — which of these is "
-                    f"really by **{pair.author}**?"
-                )
-                left_column, right_column = st.columns(2)
-                with left_column:
-                    st.caption("Left")
-                    st.text(pair.left)
-                with right_column:
-                    st.caption("Right")
-                    st.text(pair.right)
-
-                choice = st.radio(
-                    f"Your pick for {position}",
-                    options=["Skip", "Left", "Right"],
-                    horizontal=True,
-                    key=f"pick_{pair.pair_id}",
-                    label_visibility="collapsed",
-                )
-                if choice == "Skip":
-                    picks.pop(pair.pair_id, None)
-                else:
-                    picks[pair.pair_id] = choice.lower()
-
-            st.divider()
-            answered = len(picks)
-            st.progress(
-                answered / len(packet.pairs),
-                text=f"{answered} of {len(packet.pairs)} judged",
-            )
-
-            if not reader.strip():
-                st.caption("Add your name above to download your ballot.")
-            elif not picks:
-                st.caption("Make at least one pick to download your ballot.")
-            else:
-                ballot = Ballot(
-                    reader=reader.strip(), picks=dict(picks), packet_id=packet.packet_id
-                )
-                download_json(
-                    "⬇️ Download my ballot",
-                    ballot.to_dict(),
-                    f"{packet.packet_id}-ballot-{reader.strip().replace(' ', '-')}.json",
-                    type="primary",
-                )
-                st.caption("Send this file back to whoever organised the test.")
+        st.button("Start another run", key="blind_again", on_click=clear_run)
 
 
 # --- Tally ------------------------------------------------------------------
 
 else:
     st.subheader("Combine the key with the ballots")
+    st.caption(
+        "Use this to pool several readers against one packet, or to re-score a "
+        "run from its files."
+    )
     packet_column, key_column = st.columns(2)
     with packet_column:
         packet_file = st.file_uploader("Packet", type="json", key="tally_packet")
@@ -350,98 +780,11 @@ else:
         except BlindTestError as exc:
             st.error(str(exc))
         else:
-            if result.meets_gate:
-                st.success(result.verdict, icon="✅")
-            elif not result.enough_readers:
-                st.warning(result.verdict, icon="⚠️")
-            else:
-                st.error(result.verdict, icon="📊")
-
-            rate_column, interval_column, readers_column = st.columns(3)
-            with rate_column:
-                st.metric("Pick rate", f"{result.pick_rate:.0%}", help="Lower is better.")
-            with interval_column:
-                st.metric(
-                    "95% interval",
-                    f"{result.interval[0]:.0%}–{result.interval[1]:.0%}",
-                )
-            with readers_column:
-                st.metric(
-                    "Readers",
-                    result.readers,
-                    delta=None if result.enough_readers else f"{MIN_READERS} wanted",
-                    delta_color="off",
-                )
-
-            st.caption(
-                f"{result.correct} of {result.judgements} judgements identified "
-                f"the real author. The interval is a Wilson 95% interval: with "
-                f"samples this size it is wide, and reading the point estimate "
-                f"alone is how a blind test gets over-interpreted."
-            )
-
-            if result.indistinguishable:
-                st.info(
-                    "The interval reaches down to 50%, so readers cannot be "
-                    "shown to have done better than guessing.",
-                    icon="🪙",
-                )
-
-            if result.by_author:
-                st.subheader("By author")
-                st.caption(
-                    "Imitation can work for one voice and fail for another, "
-                    "which an aggregate hides."
-                )
-                st.dataframe(
-                    pd.DataFrame(
-                        [
-                            {
-                                "author": name,
-                                "pick rate": f"{rate:.0%}",
-                                "judgements": count,
-                            }
-                            for name, (rate, count) in result.by_author.items()
-                        ]
-                    ),
-                    hide_index=True,
-                )
-
-            if len(result.by_variant) > 1:
-                st.subheader("By prompt variant")
-                st.caption(
-                    "This is the comparison the protocol actually asks for: a "
-                    "bare pick rate cannot say whether v2 improved anything."
-                )
-                st.dataframe(
-                    pd.DataFrame(
-                        [
-                            {
-                                "variant": name,
-                                "pick rate": f"{rate:.0%}",
-                                "judgements": count,
-                            }
-                            for name, (rate, count) in result.by_variant.items()
-                        ]
-                    ),
-                    hide_index=True,
-                )
+            render_result(result)
 
             download_json(
                 "⬇️ Download the result",
-                {
-                    "packet_id": packet.packet_id,
-                    "judgements": result.judgements,
-                    "correct": result.correct,
-                    "pick_rate": result.pick_rate,
-                    "interval": list(result.interval),
-                    "readers": result.readers,
-                    "enough_readers": result.enough_readers,
-                    "meets_gate": result.meets_gate,
-                    "by_author": {k: list(v) for k, v in result.by_author.items()},
-                    "by_variant": {k: list(v) for k, v in result.by_variant.items()},
-                    "verdict": result.verdict,
-                },
+                result_payload(packet, result, {}),
                 f"{packet.packet_id}-result.json",
             )
             st.caption(

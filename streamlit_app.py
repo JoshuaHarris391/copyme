@@ -308,6 +308,21 @@ if analysis is not None:
             for note in profile.known_failures:
                 st.markdown(note)
 
+        st.subheader("Test whether it works")
+        st.caption(
+            "The measurements cannot tell you whether this reads like the "
+            "author — they only check that generated text hits the numbers "
+            "copyme itself chose. The **Blind test** page settles it instead, "
+            "by generating passages and asking you to pick the real one."
+        )
+        with st.expander("For the blind test — copy this without reading it"):
+            st.caption(
+                "This names which passages are the author's own, so reading it "
+                "is how you spoil your own test. Click the copy icon in the "
+                "top-right of the block and paste it into the Blind test page."
+            )
+            st.code(profile.to_json(), language="json")
+
         st.subheader("Copy it, in the format you need")
         export_format = st.selectbox(
             "Format",
