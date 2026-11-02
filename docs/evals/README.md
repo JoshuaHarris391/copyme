@@ -18,8 +18,9 @@ decides nothing.
 
 ## What has been measured
 
-These are the checks that run in CI, and they are the only quantitative claims copyme
-currently makes about itself.
+These are the checks the test suite asserts, and they are the only quantitative claims
+copyme currently makes about itself. There is no CI pipeline yet, so they run only when
+someone runs `poetry run python3 -m pytest`.
 
 | Check | Result | Where |
 |---|---|---|

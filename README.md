@@ -430,6 +430,7 @@ src/copyme/
   pre_prompt.py          # build_pre_prompt, and the retained v1 renderer
 streamlit_app.py         # Streamlit UI
 scripts/
+  generate_baseline_corpus.py  # Generates the baseline corpus from a model
   build_baseline.py      # Regenerates baseline.json from the corpus
   fetch_fixtures.py      # Downloads the golden samples, with provenance
 tests/fixtures/          # Golden samples, the baseline corpus, the card schema

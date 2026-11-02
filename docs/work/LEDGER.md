@@ -15,7 +15,7 @@ deviation from this folder's own process and is recorded here rather than hidden
 
 ## State
 
-All four specs' code is built, tested and documented. 193 tests pass, of which the
+All four specs' code is built, tested and documented. 195 tests pass, of which the
 original 77 pass **unchanged** — `build_profile(analyser)` with no v2 arguments still
 returns the v1 dictionary.
 
@@ -34,7 +34,7 @@ What landed:
 | `scorer.py` | `score`, drift, the copying check |
 | `contrastive.py` | Static notes; the live tier with an injected model call |
 | `cli.py` | `profile` / `render` / `score` / `card` |
-| `scripts/` | `build_baseline.py`, `fetch_fixtures.py` |
+| `scripts/` | `generate_baseline_corpus.py`, `build_baseline.py`, `fetch_fixtures.py` |
 
 Fixtures: four golden samples from Project Gutenberg with provenance files (London
 31,824 words, James 42,277, Twain 111,085, Wilde 20,714), a baseline corpus, and the

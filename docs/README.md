@@ -37,5 +37,6 @@ number out of this tool:
 
 ## Owner
 
-Single maintainer: the repository owner. There is no on-call rotation and nothing in
-this project runs as a service, so there is no runbook.
+Single maintainer: the repository owner. Nothing here runs as a service, so there is no
+on-call rotation and no incident runbook. The one recurring maintenance job is
+[how-to/refresh-the-baseline.md](how-to/refresh-the-baseline.md).
