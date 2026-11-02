@@ -1,0 +1,3 @@
+specs: docs/specs
+work_dir: docs/work
+repo_docs: true

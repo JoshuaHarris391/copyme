@@ -200,6 +200,41 @@ from copyme import ANALYSIS_STAGES, ProgressReporter
 to percentages yourself. The callback is never required: omit it and the calls
 are no-ops.
 
+## Documentation
+
+[`docs/`](docs/) is the entry point. In short:
+
+| If you want to know | Read |
+|---|---|
+| What each metric means and how it is scored | [`docs/linguistic_metrics.md`](docs/linguistic_metrics.md) |
+| How the Streamlit app behaves | [`docs/streamlit_app.md`](docs/streamlit_app.md) |
+| What copyme is for and where it is going | [`docs/product/`](docs/product/) |
+| How v2 is specified and built | [`docs/specs/`](docs/specs/) |
+| Why the design is the way it is | [`docs/adr/`](docs/adr/) |
+
+## Where v2 is going
+
+Everything above describes copyme **1.0.0, as it ships**: the sample is measured, the
+measurements go into the pre-prompt, and the sample is discarded.
+
+v2 inverts that. It sends the model the author's real passages, chosen for being
+typical of them and unlike generic prose, with the measurements turned into rules a
+model can follow and a scorer that tells you which habits drifted. The reasoning is in
+[`docs/product/vision.md`](docs/product/vision.md); the four milestones are in
+[`docs/product/roadmap.md`](docs/product/roadmap.md).
+
+**None of v2 is built yet.** [`docs/work/LEDGER.md`](docs/work/LEDGER.md) says how far
+the work has got.
+
+## A note on provenance
+
+copyme v2 keeps the sample and puts real passages of it into the prompt, so what you
+profile matters. Profiling a published author's text for your own use and publishing a
+model that imitates them are different positions, in law and in ethics, and copyme does
+not resolve that for you. Every export carries a footer naming the sample's size and the
+profile hash, and no feature strips a sample of its attribution. See
+[`docs/product/non-goals.md`](docs/product/non-goals.md).
+
 ## Project layout
 
 ```
@@ -209,5 +244,9 @@ src/copyme/
   pre_prompt.py          # build_pre_prompt(results) -> Markdown string
 streamlit_app.py         # Streamlit UI
 notebooks/               # Prototype notebooks (prototype.ipynb, prototype_v2.ipynb)
-docs/                    # User-facing docs
+docs/                    # Entry point; see docs/README.md
+  product/               # What copyme is for, roadmap, non-goals, integrations
+  specs/                 # v2 specs, one per milestone
+  adr/                   # Decision records
+  work/                  # Ledger and in-flight spec working files
 ```
