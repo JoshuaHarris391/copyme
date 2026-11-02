@@ -1,0 +1,14 @@
+{
+  "title": "The Importance of Being Earnest",
+  "author": "Oscar Wilde",
+  "gutenberg_id": 844,
+  "voice": "short-turn dialogue",
+  "why": "One-line paragraphs and near-continuous dialogue: the closest public-domain analogue to the chat and persona text copyme is mostly given. Used for segmentation robustness, not for the blind protocol.",
+  "blind_tested": false,
+  "slug": "dialogue",
+  "source_url": "https://www.gutenberg.org/cache/epub/844/pg844.txt",
+  "source": "Project Gutenberg",
+  "licence": "Public domain in the UK and the US",
+  "retrieved": "2026-11-02",
+  "word_count": 20714
+}

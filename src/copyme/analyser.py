@@ -182,6 +182,24 @@ ANALYSIS_STAGES = (
     ("vocabulary", "Collecting vocabulary and phrases", 0.02),
 )
 
+# The v2 stages, as an opt-in extension rather than an addition to the list
+# above.
+#
+# A caller that only wants the v1 profile never runs these two steps, and a
+# progress bar whose last two stages never arrive would stop at 94% for every
+# such caller. So the stage list a run reports against is chosen by the caller:
+# pass this one to :class:`StyleAnalyser` when a v2 profile is going to be
+# built, and the two extra stages get their share of the bar.
+#
+# Segmentation, per-passage features and the greedy selection together take
+# about as long as the quantitative metrics do. Rule rendering is arithmetic on
+# numbers already computed and is effectively free, but it gets its own stage
+# because it is the step the user is waiting to see.
+V2_ANALYSIS_STAGES = ANALYSIS_STAGES + (
+    ("exemplars", "Choosing exemplars", 0.06),
+    ("rules", "Writing voice rules", 0.01),
+)
+
 
 def _stage_boundaries(stages=ANALYSIS_STAGES):
     """Map each stage key to ``(label, start_percent, end_percent)``."""
@@ -208,15 +226,22 @@ class ProgressReporter:
     to know the stage list and the value never goes backwards.
     """
 
-    def __init__(self, callback=None):
+    def __init__(self, callback=None, stages=None):
         """
         Args:
             callback (callable, optional): Called as ``callback(label, percent)``
                 where ``label`` is a human-readable stage name and ``percent`` is
                 a float between 0.0 and 100.0.
+            stages (tuple, optional): The stage list to scale against. Defaults
+                to :data:`ANALYSIS_STAGES`. Pass :data:`V2_ANALYSIS_STAGES` when
+                exemplars and rules will also be built, so the bar is scaled for
+                the work that is actually going to happen.
         """
         self._callback = callback
         self._percent = 0.0
+        self._boundaries = (
+            STAGE_BOUNDARIES if stages is None else _stage_boundaries(stages)
+        )
 
     @property
     def enabled(self):
@@ -232,7 +257,12 @@ class ProgressReporter:
         """
         if self._callback is None:
             return
-        label, start, end = STAGE_BOUNDARIES.get(key, (key, 0.0, 100.0))
+        # An unknown key -- a v2 stage reported by an analyser built with the v1
+        # stage list -- maps to the current position, so it is a no-op rather
+        # than a jump or a crash.
+        label, start, end = self._boundaries.get(
+            key, (key, self._percent, self._percent)
+        )
         fraction = max(0.0, min(1.0, fraction))
         percent = max(self._percent, start + (end - start) * fraction)
         self._percent = percent
@@ -439,7 +469,7 @@ class StyleAnalyser:
             configurable phrase list.
     """
 
-    def __init__(self, text, memory_gb=None, on_progress=None):
+    def __init__(self, text, memory_gb=None, on_progress=None, stages=None):
         """
         Initializes the StyleAnalyser with input text.
 
@@ -453,12 +483,17 @@ class StyleAnalyser:
                 the text is processed.
             on_progress (callable, optional): Called as ``on_progress(label, percent)``
                 as each analysis stage completes, for status indicators in UIs.
+            stages (tuple, optional): The stage list progress is scaled against.
+                Defaults to :data:`ANALYSIS_STAGES`. Pass
+                :data:`V2_ANALYSIS_STAGES` when a v2 profile will be built from
+                this analyser, so the bar accounts for exemplar selection and
+                rule rendering.
 
         Raises:
             TextTooLongError: If the text exceeds the character limit implied by
                 the current memory budget.
         """
-        self._progress = ProgressReporter(on_progress)
+        self._progress = ProgressReporter(on_progress, stages=stages)
         if memory_gb is not None:
             configure_memory_budget(memory_gb)
         check_text_length(text)
@@ -1019,12 +1054,23 @@ class StyleAnalyser:
 # --- MAIN ANALYSIS FUNCTION ---
 
 def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE,
-                  max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
-    """Assemble the full linguistic-style profile from a parsed analyser.
+                  max_phrase_words=DEFAULT_MAX_PHRASE_WORDS,
+                  exemplar_budget=None, size=None, weights=None,
+                  mask_names=True, contrastive="static",
+                  model="claude-sonnet-5", baseline=None):
+    """Assemble the linguistic-style profile from a parsed analyser.
 
     This is the cheap half of the analysis: it reuses the tokens, sentences and
     counts already held by ``analyzer`` and never touches SpaCy, so UIs can call
     it again whenever a vocabulary control changes.
+
+    **Two return shapes, chosen by the arguments.** Called with only
+    ``vocabulary_percentile`` and ``max_phrase_words`` it returns the v1
+    dictionary, unchanged, so ``analyze_linguistic_style``, the notebooks and
+    the existing tests are unaffected. Passing ``exemplar_budget`` or ``size``
+    asks for the v2 :class:`copyme.profile.Profile`, which carries exemplars and
+    rules and holds the v1 dictionary under its ``metrics`` field -- so nothing
+    is taken away from a caller who opts in.
 
     Args:
         analyzer (StyleAnalyser): An analyser that has already parsed the text.
@@ -1034,11 +1080,20 @@ def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE,
         max_phrase_words (int, optional): Longest phrase to keep in the
             ``words`` section, in words. Only affects the phrase list; Formulaic
             Density stays pinned to :data:`PHRASE_METRIC_N_RANGE`.
+        exemplar_budget (int, optional): Tokens for the exemplar block. Supplying
+            this, or ``size``, switches the return type to ``Profile``.
+        size (str, optional): ``"compact"``, ``"standard"`` or ``"full"``.
+        weights (tuple, optional): Selection weights for typicality,
+            distinctiveness and diversity.
+        mask_names (bool): Whether one-off names are masked in the exemplars.
+        contrastive (str | None): ``"static"``, ``"live"`` or None.
+        model (str): The model name recorded in the profile.
+        baseline (copyme.baseline.Baseline, optional): Override the packaged
+            generic-prose baseline.
 
     Returns:
-        dict: The ``quantitative``, ``qualitative`` and ``words`` sections, plus
-            a ``limits`` section reporting the input length, the configured
-            character limit, the memory budget behind it and the phrase length.
+        dict | copyme.profile.Profile: The v1 dictionary, or a v2 profile when
+            ``exemplar_budget`` or ``size`` is given.
     """
     # Calculate Quantitative Values
     ttr = analyzer.get_ttr()
@@ -1113,7 +1168,7 @@ def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE,
         }
     analyzer.report_progress("vocabulary")
 
-    return {
+    legacy = {
         "quantitative": quantitative,
         "qualitative": qualitative,
         "words": words,
@@ -1124,6 +1179,29 @@ def build_profile(analyzer, vocabulary_percentile=DEFAULT_VOCABULARY_PERCENTILE,
             "memory_budget_gb": memory_for_length(get_max_length())
         }
     }
+
+    if exemplar_budget is None and size is None:
+        return legacy
+
+    # Imported here, not at module scope: profile -> exemplars -> features ->
+    # analyser is the dependency direction, and importing profile at the top
+    # would close that into a cycle.
+    from .profile import DEFAULT_SIZE, build_v2_profile
+    from .exemplars import DEFAULT_WEIGHTS
+
+    return build_v2_profile(
+        analyzer,
+        legacy=legacy,
+        size=size or DEFAULT_SIZE,
+        exemplar_budget=exemplar_budget,
+        weights=weights or DEFAULT_WEIGHTS,
+        mask_names=mask_names,
+        contrastive=contrastive,
+        model=model,
+        vocabulary_percentile=vocabulary_percentile,
+        max_phrase_words=max_phrase_words,
+        baseline=baseline,
+    )
 
 
 def analyze_linguistic_style(text, memory_gb=None, on_progress=None,

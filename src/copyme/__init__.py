@@ -24,7 +24,19 @@ from .analyser import (
     top_fraction,
 )
 from .metrics_dictionary import LINGUISTIC_STYLE_METRICS, PRE_PROMPT_INSTRUCTION
-from .pre_prompt import build_pre_prompt
+from .pre_prompt import build_pre_prompt, build_v1_pre_prompt
+
+# --- v2 ---
+from .baseline import Baseline, load_baseline
+from .contrastive import live_notes, static_notes
+from .exemplars import DEFAULT_WEIGHTS, Exemplar, Selection, select_exemplars
+from .exports import FORMATS, sillytavern_card, token_estimates, voice_card
+from .features import FEATURE_NAMES, FeatureSet, document_features, passage_features
+from .passages import MAX_PASSAGE_TOKENS, MIN_PASSAGE_TOKENS, Passage, segment
+from .profile import SIZE_PRESETS, Profile, build_v2_profile
+from .rules import Rule, render_rules
+from .scorer import Drift, ScoreReport, score
+from .separation import mask_names, style_phrases, style_word_counts
 
 __all__ = [
     "analyze_linguistic_style",
@@ -53,4 +65,37 @@ __all__ = [
     "MIN_PHRASE_WORDS",
     "MAX_PHRASE_WORDS",
     "PHRASE_METRIC_N_RANGE",
+    # --- v2 ---
+    "Baseline",
+    "load_baseline",
+    "Passage",
+    "segment",
+    "MIN_PASSAGE_TOKENS",
+    "MAX_PASSAGE_TOKENS",
+    "FeatureSet",
+    "FEATURE_NAMES",
+    "document_features",
+    "passage_features",
+    "Exemplar",
+    "Selection",
+    "select_exemplars",
+    "DEFAULT_WEIGHTS",
+    "Rule",
+    "render_rules",
+    "Profile",
+    "SIZE_PRESETS",
+    "build_v2_profile",
+    "FORMATS",
+    "voice_card",
+    "sillytavern_card",
+    "token_estimates",
+    "Drift",
+    "ScoreReport",
+    "score",
+    "static_notes",
+    "live_notes",
+    "mask_names",
+    "style_word_counts",
+    "style_phrases",
+    "build_v1_pre_prompt",
 ]

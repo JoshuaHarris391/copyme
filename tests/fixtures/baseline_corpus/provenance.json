@@ -1,0 +1,15 @@
+{
+  "status": "provisional",
+  "source": "Hand-written in assistant register by the maintainer",
+  "model": null,
+  "prompt_set": null,
+  "created": "2026-11-02",
+  "passages": 20,
+  "approximate_words": 4000,
+  "target_words": 300000,
+  "known_limitations": [
+    "Roughly two orders of magnitude smaller than the intended corpus, so feature spreads are wider than they should be and rule suppression is conservative.",
+    "One person's impression of assistant register rather than a sample of real model output.",
+    "Subject matter is narrow: software and technical explanation. Register features are broadly subject-independent, but opener and vocabulary features may be skewed."
+  ]
+}

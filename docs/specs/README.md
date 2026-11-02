@@ -117,3 +117,26 @@ Recorded rather than silently resolved.
 | D1 | The baseline vector ships in milestone 3 | A provisional baseline ships in milestone 1; the regeneration script and documented refresh stay in milestone 3 | Milestone 1 cannot compute distinctiveness or suppress a rule without a baseline. Deferring it would make milestone 1 unshippable on its own, which breaks the "each milestone is useful alone" property |
 | D2 | Milestone 4 holds the golden samples | The golden-sample fixtures land in milestone 1 | They are milestone 1's own gate — the rule and exemplar snapshots have nothing to snapshot without them. The blind protocol that *uses* them stays in milestone 4 |
 | D3 | Part C lists Maya code changes | They are documented in [../product/integrations.md](../product/integrations.md), not specified here | They are changes to a different repository and belong in its spec folder |
+
+## Deviations found during implementation
+
+The four specs were implemented together rather than in sequence. These are the places
+where the specs turned out to be unbuildable as written, recorded rather than quietly
+resolved.
+
+| # | Spec says | What was built | Why |
+|---|---|---|---|
+| D4 | Every passage is 120 to 400 tokens, except the last; and no passage splits a paragraph (spec 01) | Both rules hold except where they conflict — a single paragraph, dialogue run or list run longer than 400 tokens is emitted whole and flagged `oversized` | The two rules are not jointly satisfiable. Henry James writes paragraphs past the ceiling, and splitting one destroys the thing being measured. Overshooting is visible in the flag; a sub-floor passage would have been invisible. Segmentation also aims at 300 tokens rather than closing at the 120 floor, which stopped passages clustering at the floor and wasting the budget |
+| D5 | Each preset's output is within 15% of its stated token budget (spec 01) | The budget is enforced as a **ceiling**: output never exceeds it, and may fall well under | The stated budgets and exemplar counts are not jointly satisfiable either. Full allows 20,000 exemplar tokens and 20–30 passages, but a passage is capped at 400 tokens, so 30 passages cannot exceed about 12,000. The counts come from the research on how many examples help; the budgets are limits on where a prompt has to fit. Where they conflict, overflowing the field a prompt was sized for is the harmful error and coming in short is not, so `exports.py` drops passages until the render fits |
+| D6 | The scorer is spec 03; selection and rules are spec 01 | A minimal feature-distance scorer and the full v2 feature set were built first, before selection and rules | Spec 01's open questions — the selection weights, MTLD versus MATTR, whether Compact carries passages — are all answered by measurement, and spec 04 holds the measurement. Building the measurement layer first is what let MATTR be chosen on evidence (5.7% drift against MTLD's 36.9%) rather than shipped as a guess |
+| D7 | `Rule.band` is "the accept range for the scorer" (spec 01), unspecified | Each band is the author's value widened by the author's **own** passage-to-passage standard deviation, falling back to ±35% where that is unknown | A flat percentage calls a consistent writer's ordinary sentence out of range and lets an erratic writer's wild swing pass. Selection already walks every passage to compute the spread, so it hands the numbers to the renderer rather than having them computed twice |
+| D8 | The live contrastive tier is accepted and rejected until spec 04 lands (spec 03) | The live tier is implemented, with the model call injected as a parameter | Building all four specs together made the staged rejection pointless. Injecting the call is what lets the whole tier be unit-tested with no network and no key; only the API call itself is untested |
+
+## What remains unbuilt
+
+One thing in spec 04 is not code and was not done: **the blind evaluation protocol has
+not been run**, because it needs three or more human readers per author. Everything that
+depends on it — the selection weights, whether Compact should carry passages at all, the
+name-masking threshold, the copying threshold — therefore still ships as an intuition
+with a default attached. [../evals/](../evals/) records what is outstanding and what has
+actually been measured.

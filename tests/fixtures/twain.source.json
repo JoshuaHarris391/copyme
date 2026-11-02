@@ -1,0 +1,14 @@
+{
+  "title": "Adventures of Huckleberry Finn",
+  "author": "Mark Twain",
+  "gutenberg_id": 76,
+  "voice": "conversational",
+  "why": "First person, idiomatic, fragments and asides.",
+  "blind_tested": true,
+  "slug": "twain",
+  "source_url": "https://www.gutenberg.org/cache/epub/76/pg76.txt",
+  "source": "Project Gutenberg",
+  "licence": "Public domain in the UK and the US",
+  "retrieved": "2026-11-02",
+  "word_count": 111085
+}

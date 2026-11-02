@@ -1,26 +1,85 @@
 # copyme
 
-Tools for generating a linguistic style profile from a sample of someone's writing, then turning that profile into a copy-paste-ready pre-prompt that an LLM can use to write in their voice.
+Build a writing-voice profile from a sample of someone's writing, then render it
+wherever a voice is needed: a chat, a system prompt, a character card, or your own
+application.
 
 ## Why
 
-Asking ChatGPT or Claude to "write in my voice" usually fails — the model has no measurable description of what your voice actually is. `copyme` solves that by:
+Asking ChatGPT or Claude to "write in my voice" usually fails. The obvious fix is to
+describe the voice in numbers, which is what copyme 1.0 did — and it does not work
+either, because a model cannot act on `modal_hedging_ratio: 0.04`.
 
-1. Running an NLP pass over a sample of the author's writing (SpaCy + Empath + textstat).
-2. Computing a structured profile of their linguistic fingerprint: lexical diversity, sentence cadence, punctuation density, hedging, rhetorical intent, signature phrases, and more.
-3. Bundling the metric **definitions** + the author's **computed values** + an **instruction** into a single Markdown block you can paste straight into any LLM as the first message of a chat.
+What does work is showing the model the writing. So v2 inverts the prompt:
 
-The output is intentionally LLM-readable rather than human-readable — the goal is to give a downstream model enough structured context to mimic the author's style consistently.
+1. An NLP pass over the sample (spaCy + Empath + textstat), run once.
+2. The sample is split into passages, and each is measured. The measurements choose
+   which passages to send — the ones typical of the author and unlike generic model
+   prose — and turn the author's habits into **rules a model can follow**, with a
+   frequency on each.
+3. The prompt carries the author's **real passages** and those rules. The numbers stay
+   behind the scenes, where they also tell you which habits a generated draft got
+   wrong.
 
-## What gets profiled
+The measurements did not go away. They changed job: they select, they phrase, and they
+score. They are no longer the payload.
+
+## What the prompt contains
+
+In a fixed order, so an API consumer can cache the stable prefix:
+
+| Section | What it is |
+|---|---|
+| **Instructions** | Write as this person; take the manner, not the subjects; match how often each habit occurs |
+| **Voice rules** | Followable instructions with a frequency on each — *"Keep most sentences between 10 and 26 words… one in ten runs past 35"* |
+| **Passages** | The author's own writing, selected and with one-off names masked |
+| **Where this usually goes wrong** | Up to three predicted drifts, from the gap between the author and generic prose |
+| **Voice card** | Up to five lines to re-paste when a long chat starts to drift |
+
+**No metric dictionary and no JSON.** Both were in the v1 prompt and both are gone from
+it. Every number is still available to you, in the UI's collapsed *Raw metrics* section
+and in the `json` export.
+
+## What gets measured
 
 | Layer | Examples |
 |---|---|
-| **Quantitative** | Type-Token Ratio, Mean Sentence Length, Punctuation Density, Discourse Marker Density, Hapax Legomena Ratio, Formulaic Density, Modal Hedging Ratio, Flesch Reading Ease, Function Word Frequency |
-| **Qualitative** | Lexical Sophistication, Syntactic Variety, Cohesive Harmony, Rhetorical Intent, Genre Alignment, plus a categorical assessment for every quantitative metric |
-| **Vocabulary** | Top 10 most-used words, top 10 repeated 2-4 word phrases (signature collocations) |
+| **The v2 feature set** | Sentence-length quartiles and variation, sentence openers, contraction rate, person and address, questions and exclamations, dashes and ellipses, fragments, paragraph length, opening and closing sentences, capitalisation and emoji, vocabulary range (MATTR), hedging |
+| **Quantitative (v1, retained)** | Type-Token Ratio, Mean Sentence Length, Punctuation Density, Discourse Marker Density, Hapax Legomena Ratio, Formulaic Density, Modal Hedging Ratio, Flesch Reading Ease, Function Word Frequency |
+| **Qualitative (v1, retained)** | Lexical Sophistication, Syntactic Variety, Cohesive Harmony, Rhetorical Intent, Genre Alignment |
+| **Style vocabulary** | The author's connectives and qualifiers, and their repeated idioms — filtered to manner rather than subject, so *"I mean"* survives and *"the quarterly report"* does not |
 
-Full definitions live in [`src/copyme/metrics_dictionary.py`](src/copyme/metrics_dictionary.py) and are also embedded inside every generated pre-prompt.
+Three measured features deliberately produce **no rule**: `cohesive_harmony` (no
+evidence a model can act on it), `function_word_frequency` (an authorship-attribution
+feature with no generation value) and named-entity density (it describes subject
+matter, which the prompt explicitly tells the model not to import). All three stay in
+the profile.
+
+Definitions of the v1 metrics live in
+[`src/copyme/metrics_dictionary.py`](src/copyme/metrics_dictionary.py); the v2 features
+are in [`src/copyme/features.py`](src/copyme/features.py). Neither is embedded in a
+prompt any more.
+
+## Profile sizes
+
+| Preset | Ceiling | Passages | For |
+|---|---|---|---|
+| **Compact** | 2,000 tokens | 3–5 | A system-prompt field |
+| **Standard** | 8,000 tokens | 8–15 | Pasting into a chat |
+| **Full** | 30,000 tokens | 15–30 | Long-context models, Claude Projects |
+
+The token figure is a **ceiling, not a target**: a prompt that overflows the field it
+was sized for is a broken prompt, so exemplars are dropped until it fits. Full
+typically lands well under its ceiling, because 30 passages capped at 400 tokens each
+cannot fill 30,000 tokens.
+
+## How much writing you need
+
+**About 2,000 words gives a recognisable voice; 10,000 or more gives a reliable one.**
+Selection needs passages to choose between, and under 2,000 words there are not enough
+of them for distinctiveness or diversity to mean much. Below that floor copyme says so,
+in the app and in the prompt itself, rather than producing a confident profile from
+thin evidence.
 
 ## Streamlit app
 
@@ -47,12 +106,24 @@ poetry run streamlit run streamlit_app.py
 Streamlit will open the app at <http://localhost:8501>.
 
 ### Use
-1. Paste a sample of the author's writing into **Text to analyze** (a few paragraphs is enough; longer is better).
-2. Click **Generate linguistic profile**. A status container shows which stage is running (**Parsing text with spaCy**, then semantic analysis, metrics, and so on), a progress bar, and elapsed time; it collapses to *Analysis complete in Ns* when done.
-3. Inspect the three raw sections (**Quantitative**, **Qualitative**, **Vocabulary & Phrases**).
-4. Adjust **Keep the most frequent (%)** and **Longest phrase (words)** in the sidebar to control how much vocabulary is captured (see below). Both re-derive from the cached parse, so they update instantly rather than re-parsing the text.
-5. Scroll to **Copyable Pre-Prompt**. A size indicator reports its character and token count, so you can check it fits the model's context window before pasting. Click the copy icon in the top-right of the block, and paste it as the first message of a fresh ChatGPT / Claude / Gemini chat.
-6. Then ask the LLM to write whatever you need — it will use the profile as a target style guide.
+1. Paste a sample of the author's writing into **Text to analyze**. Aim for 2,000 words
+   or more; 10,000 is better.
+2. Pick a **Profile size** in the sidebar, and decide whether to **mask one-off names**.
+3. Click **Generate linguistic profile**. A status container shows which stage is
+   running (**Parsing text with spaCy**, then semantic analysis, metrics, **Choosing
+   exemplars**, **Writing voice rules**), a progress bar, and elapsed time.
+4. Read **the passages it chose, and why**. Each carries a one-line reason — *"typical
+   of the author; semicolons well above generic prose"* — and its three scores. The
+   reason is for you and is **never sent to the model**.
+5. Read the **voice rules** and, if present, **where this usually goes wrong**.
+6. Choose a **format** and copy it. The size indicator reports two token figures, one
+   per model family, because the tokenisers differ.
+7. Paste it where it is going, and ask the model to write.
+8. Paste the result into the **Score a draft** tab to see which habits drifted and
+   whether anything was copied outright.
+
+Everything except step 3 re-derives from the cached parse, so changing size, masking or
+format is instant.
 
 More UI-specific notes are in [`docs/streamlit_app.md`](docs/streamlit_app.md).
 
@@ -106,13 +177,64 @@ The phrase list is configurable; the metric stays pinned to 2-4 words. The
 active length is recorded in `results["limits"]["max_phrase_words"]`, so a
 profile can always be reproduced.
 
+## Command line
+
+```bash
+copyme profile sample.txt --out profile.json [--size standard] [--budget 5000]
+copyme render profile.json --size compact --format system_prompt
+copyme score generated.txt --against profile.json [--json]
+copyme card profile.json --out author.png          # Character Card V2 PNG
+```
+
+`render`, `score` and `card` work entirely from the JSON file — no sample, no re-parse.
+**No subcommand needs an API key.** `--contrastive live` is the only path that can use
+one, and without a key it falls back to the static tier and says why.
+
+Progress and warnings go to stderr, so `copyme score --json` emits JSON on stdout and
+nothing else.
+
 ## Programmatic use
 
 ```python
-from copyme import StyleAnalyser, analyze_linguistic_style, build_pre_prompt, build_profile
+from copyme import StyleAnalyser, build_pre_prompt, build_profile, score
 
 sample = open("my_writing.txt").read()
 
+analyser = StyleAnalyser(sample)                      # expensive: runs spaCy once
+profile = build_profile(analyser, size="standard")    # cheap: a Profile
+
+print(f"{len(profile.exemplars)} passages, {len(profile.rules)} rules")
+for rule in profile.rules:
+    print("-", rule.prose)
+
+prompt = build_pre_prompt(profile, format="first_message")
+
+# ...paste `prompt` into a model, then check what came back:
+report = score(model_output, against=profile)
+print(report.summary)
+```
+
+`Profile` is the only thing the exports and the scorer know about. It serialises both
+ways, so a profile built once can be re-rendered at any size with no parse:
+
+```python
+from copyme import Profile
+
+open("profile.json", "w").write(profile.to_json())
+
+later = Profile.from_json(open("profile.json").read())
+compact = build_pre_prompt(later, size="compact", format="voice_card")
+```
+
+### Backwards compatibility
+
+`build_profile(analyser)` with no v2 arguments **returns the v1 dictionary, unchanged**,
+and `build_pre_prompt` given that dictionary produces the v1 block, metric dictionary
+and all. The v1 test suite passes untouched. Opting into v2 is a choice, not a
+migration — and a v2 profile still carries the v1 metrics under `profile.metrics`.
+
+```python
+from copyme import analyze_linguistic_style, build_pre_prompt
 
 def on_progress(label, percent):
     print(f"{percent:5.1f}%  {label}")
@@ -122,46 +244,68 @@ def on_progress(label, percent):
 results = analyze_linguistic_style(
     sample, memory_gb=25, on_progress=on_progress, vocabulary_percentile=20
 )
-pre_prompt = build_pre_prompt(results)
-print(pre_prompt)
+pre_prompt = build_pre_prompt(results)   # the v1 block
 ```
 
+### Export targets
+
+| Target | Shape |
+|---|---|
+| `first_message` | Markdown, for the first message of a chat |
+| `system_prompt` | The same content as standing instructions, no chat framing |
+| `voice_card` | Up to five lines, for re-pasting mid-conversation |
+| `sillytavern_card` | Character Card V2 JSON (`copyme card` writes the PNG) |
+| `json` | The whole profile: features, rules with bands, passages with reasons, provenance |
+| `exemplars` / `rules` | Either block alone, for an application that assembles its own prompt |
+
+Every prose export ends with a provenance footer naming the copyme version, the profile
+hash, the sample's word count and the baseline version — and naming no path, host or
+key.
+
 Parsing is the expensive half of the analysis, so the two halves are exposed
-separately. Parse once, then re-derive the profile as often as you like — this is
-what lets the UI respond to the vocabulary slider without re-parsing:
+separately. Parse once, then re-derive as often as you like — this is what lets the UI
+respond to every slider without re-parsing:
 
 ```python
-analyzer = StyleAnalyser(sample)          # expensive: runs SpaCy
-profile = build_profile(analyzer, vocabulary_percentile=20)   # cheap
+analyzer = StyleAnalyser(sample)                              # expensive: runs SpaCy
+profile = build_profile(analyzer, vocabulary_percentile=20)   # cheap (v1 dict)
 slimmer = build_profile(analyzer, vocabulary_percentile=5)    # also cheap
 longer_phrases = build_profile(analyzer, max_phrase_words=6)  # up to 6-word phrases
+v2 = build_profile(analyzer, size="full")                     # cheap (Profile)
 ```
 
 `analyze_linguistic_style` returns `{"quantitative": {...}, "qualitative": {...}, "words": {...}, "limits": {...}}`.
 `limits` reports the analysed `text_length`, the configured `max_length`, and
 the `memory_budget_gb` behind it. Passing `vocabulary_percentile=None` restores
-the legacy behaviour of the top ten words and phrases. `build_pre_prompt`
-composes the Markdown block (dictionary + metrics + instructions) ready to paste
-into an LLM.
+the legacy behaviour of the top ten words and phrases.
 
-To check that the pre-prompt fits a context window, measure it with
-`count_tokens`, which returns the count and whether it is exact:
+### Measuring the size
+
+A single token count misleads, because the two major tokenisers genuinely differ, so
+`token_estimates` reports both:
 
 ```python
-from copyme import build_pre_prompt, count_tokens
+from copyme import build_pre_prompt, token_estimates
 
-pre_prompt = build_pre_prompt(results)
-tokens, exact = count_tokens(pre_prompt)
-print(f"{tokens:,} tokens" + ("" if exact else " (estimated)"))
+counts = token_estimates(build_pre_prompt(profile))
+# {'gpt': 3689, 'gpt_exact': True, 'claude': 4796, 'claude_exact': False,
+#  'multiplier': 1.3}
 ```
 
-If `tiktoken` is installed, `count_tokens` uses its `cl100k_base` encoding and
-returns an exact count — accurate for the GPT-3.5/GPT-4 family and a close guide
-for other vendors. Without it (the default, no extra dependency and no network
-access) the count is an estimate calibrated against `cl100k_base`: 99% of the
-true count for a generated pre-prompt, and within roughly 10% for prose, JSON
-and source code. Note that `tiktoken` downloads its merge table on first use, so
-it needs network access once.
+The GPT figure uses `cl100k_base` and is exact when `tiktoken` is installed — accurate
+for the GPT-3.5/GPT-4 family. Without it the count is an estimate calibrated against
+the same encoding: 99% of the true count for a generated prompt, within roughly 10% for
+prose, JSON and source code. (`tiktoken` downloads its merge table on first use, so it
+needs network access once.)
+
+**The Claude figure is always an estimate**, computed as the GPT figure times
+`CLAUDE_TOKEN_MULTIPLIER` (1.3). Claude Sonnet 5's tokeniser produces roughly 30% more
+tokens for the same English text than its predecessor, and there is no offline Claude
+tokeniser to measure it with. When one exists, that constant and the code paths using
+it should be deleted rather than kept alongside it.
+
+`count_tokens` is still available and unchanged, returning `(count, exact)` for the GPT
+family alone.
 
 The helpers behind the budget are public too:
 
@@ -212,19 +356,37 @@ are no-ops.
 | How v2 is specified and built | [`docs/specs/`](docs/specs/) |
 | Why the design is the way it is | [`docs/adr/`](docs/adr/) |
 
-## Where v2 is going
+## What is measured, and what is not
 
-Everything above describes copyme **1.0.0, as it ships**: the sample is measured, the
-measurements go into the pre-prompt, and the sample is discarded.
+v2's code is built and tested. Two things about its *evidence* need stating plainly,
+because both affect how much weight the output can carry.
 
-v2 inverts that. It sends the model the author's real passages, chosen for being
-typical of them and unlike generic prose, with the measurements turned into rules a
-model can follow and a scorer that tells you which habits drifted. The reasoning is in
-[`docs/product/vision.md`](docs/product/vision.md); the four milestones are in
-[`docs/product/roadmap.md`](docs/product/roadmap.md).
+**The generic-prose baseline is provisional.** Every rule copyme emits is a rule the
+model does not already follow, and the baseline is how "already" is defined. The shipped
+one is hand-written, about 4,000 words, against an intended few hundred thousand of real
+model output. `scripts/build_baseline.py` reports that 24 of 36 feature spreads have not
+stabilised at that size, and the baseline records it. The effect is that rule
+suppression errs towards emitting a rule rather than dropping one, and that some
+salience figures are inflated. Replacing it is a documented procedure:
+[`docs/how-to/refresh-the-baseline.md`](docs/how-to/refresh-the-baseline.md).
 
-**None of v2 is built yet.** [`docs/work/LEDGER.md`](docs/work/LEDGER.md) says how far
-the work has got.
+**The blind evaluation has not been run.** v2 rests on published work about imitation in
+general, not on evidence about copyme in particular. The protocol that would produce
+that evidence needs three or more readers per author and is specified in
+[`docs/specs/04-live-loop-and-evaluation.md`](docs/specs/04-live-loop-and-evaluation.md);
+[`docs/evals/`](docs/evals/) says what is outstanding. Until it runs, these remain
+intuitions with defaults attached rather than findings: the 0.4 / 0.4 / 0.2 selection
+weights, whether Compact should carry passages at all, the three-occurrence name-masking
+threshold, and the twelve-word copying threshold. Each is a parameter, so each can be
+measured rather than argued about.
+
+What *is* measured: MATTR replaced type-token ratio on the evidence of a stability test
+across sample lengths (at most 5.7% drift against TTR's 46–61%), and a text scored
+against its own profile is in band on every rule.
+
+The reasoning behind the design is in
+[`docs/product/vision.md`](docs/product/vision.md); progress is in
+[`docs/work/LEDGER.md`](docs/work/LEDGER.md).
 
 ## A note on provenance
 
@@ -239,14 +401,32 @@ profile hash, and no feature strips a sample of its attribution. See
 
 ```
 src/copyme/
-  analyser.py            # StyleAnalyser + analyze_linguistic_style
-  metrics_dictionary.py  # Definitions for every metric + the LLM instruction
-  pre_prompt.py          # build_pre_prompt(results) -> Markdown string
+  analyser.py            # StyleAnalyser + analyze_linguistic_style + build_profile
+  passages.py            # Segmentation into candidate passages
+  features.py            # The v2 feature set, per document and per passage
+  baseline.py            # The generic-prose baseline: z-scores and distance
+  data/baseline.json     # Feature means and spreads. Numbers only, no text
+  exemplars.py           # select_exemplars: typicality, distinctiveness, diversity
+  rules.py               # Rule + render_rules: measurements -> instructions
+  separation.py          # Style/content filters and name masking
+  profile.py             # The frozen Profile, the size presets, serialisation
+  exports.py             # The five export targets and the two partials
+  scorer.py              # Drift, ScoreReport, score
+  contrastive.py         # Static and live known-failure notes
+  cli.py                 # copyme profile / render / score / card
+  metrics_dictionary.py  # v1 metric definitions (profile-only; not prompt content)
+  pre_prompt.py          # build_pre_prompt, and the retained v1 renderer
 streamlit_app.py         # Streamlit UI
+scripts/
+  build_baseline.py      # Regenerates baseline.json from the corpus
+  fetch_fixtures.py      # Downloads the golden samples, with provenance
+tests/fixtures/          # Golden samples, the baseline corpus, the card schema
 notebooks/               # Prototype notebooks (prototype.ipynb, prototype_v2.ipynb)
 docs/                    # Entry point; see docs/README.md
   product/               # What copyme is for, roadmap, non-goals, integrations
   specs/                 # v2 specs, one per milestone
   adr/                   # Decision records
+  how-to/                # Maintenance procedures
+  evals/                 # Evaluation runs, and what is outstanding
   work/                  # Ledger and in-flight spec working files
 ```

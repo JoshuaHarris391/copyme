@@ -8,7 +8,9 @@ from copyme import (
     StyleAnalyser,
     analyze_linguistic_style,
     build_pre_prompt,
+    build_profile,
     count_tokens,
+    token_estimates,
 )
 
 APP = "streamlit_app.py"
@@ -152,47 +154,68 @@ def test_changing_the_text_drops_the_cached_parse():
     at = _app()
     at.text_area[0].set_value(SAMPLE)
     at.button[0].click().run()
-    assert any(s.value == "Quantitative Metrics" for s in at.subheader)
+    assert any(s.value == "Voice rules" for s in at.subheader)
 
     at.text_area[0].set_value("Something else entirely. It is different.")
     at.run()
 
     assert list(at.exception) == []
-    assert "Quantitative Metrics" not in [s.value for s in at.subheader]
+    assert "Voice rules" not in [s.value for s in at.subheader]
 
 
-def test_pre_prompt_token_indicator_matches_the_library():
+def test_token_indicator_reports_both_tokenisers():
+    """The size indicator must show a figure per model family, not one number.
+
+    A single count misleads, because Claude's tokeniser produces noticeably more
+    tokens than ``cl100k_base`` for the same text. A profile sized to fit a
+    budget on one figure can overflow the other, so both are shown and both are
+    labelled. This checks the UI's figures against what the library computes,
+    so the caption cannot drift away from the maths behind it.
+    """
     at = _app()
     at.text_area[0].set_value(SAMPLE)
     at.button[0].click().run()
 
     assert list(at.exception) == []
-    indicator = [m.value for m in at.markdown if "Pre-prompt size" in m.value]
+    indicator = [m.value for m in at.markdown if "GPT family" in m.value]
     assert len(indicator) == 1
 
-    expected_prompt = build_pre_prompt(
-        analyze_linguistic_style(SAMPLE, vocabulary_percentile=20)
+    analyser = StyleAnalyser(SAMPLE)
+    profile = build_profile(analyser, vocabulary_percentile=20, size="standard")
+    expected = token_estimates(
+        build_pre_prompt(profile, size="standard", format="first_message")
     )
-    expected_count, _ = count_tokens(expected_prompt)
-    assert f"{len(expected_prompt):,} characters" in indicator[0]
-    assert f"{expected_count:,} tokens" in indicator[0]
+
+    assert f"{expected['gpt']:,}" in indicator[0]
+    assert f"{expected['claude']:,}" in indicator[0]
+    assert expected["claude"] > expected["gpt"]
 
 
-def test_token_indicator_follows_the_vocabulary_slider():
+def test_size_radio_changes_the_prompt_without_reparsing():
+    """Switching size must re-derive from the cached parse, not re-analyse.
+
+    The size presets exist so a profile can be sized for where it is going, and
+    the whole point of caching the parse is that changing that choice costs
+    nothing. A re-parse would show up as a new status element; the token count
+    must still move, or the radio is doing nothing.
+    """
     at = _app()
     at.text_area[0].set_value(open("README.md").read())
     at.button[0].click().run()
 
     def tokens():
-        value = [m.value for m in at.markdown if "Pre-prompt size" in m.value][0]
-        return int(value.split("**")[1].replace(",", "").split()[0])
+        value = [m.value for m in at.markdown if "GPT family" in m.value][0]
+        return int(value.split("GPT family **")[1].split("**")[0].replace(",", ""))
 
-    narrow = tokens()
-    at.sidebar.slider[0].set_value(100).run()
+    at.sidebar.radio[0].set_value("compact").run()
+    compact = tokens()
 
-    # No re-parse, but a wider vocabulary makes the pre-prompt bigger.
+    at.sidebar.radio[0].set_value("full").run()
+
+    # No status element means no re-parse: the second render came from the
+    # cached spaCy document.
     assert list(at.status) == []
-    assert tokens() > narrow
+    assert tokens() > compact
 
 
 def test_within_budget_input_renders_sections():
@@ -202,9 +225,9 @@ def test_within_budget_input_renders_sections():
 
     assert list(at.exception) == []
     sections = [s.value for s in at.subheader]
-    assert "Quantitative Metrics" in sections
-    assert "Vocabulary & Phrases" in sections
-    assert "Copyable Pre-Prompt" in sections
+    assert "The passages it chose, and why" in sections
+    assert "Voice rules" in sections
+    assert "Copy it, in the format you need" in sections
     assert any(c.value.startswith("Analysed 45 characters") for c in at.caption)
 
 
