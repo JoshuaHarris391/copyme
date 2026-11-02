@@ -12,6 +12,7 @@ everything that does not fit on the front door.
 | How the Streamlit app behaves | [streamlit_app.md](streamlit_app.md) |
 | How to refresh the generic-prose baseline | [how-to/refresh-the-baseline.md](how-to/refresh-the-baseline.md) |
 | What has actually been measured about copyme | [evals/](evals/) |
+| What changed in each release | [../CHANGELOG.md](../CHANGELOG.md) |
 
 ## What is built and what is evidenced
 
