@@ -38,6 +38,9 @@ from .blind import (
     Packet,
     Tally,
     build_packet,
+    pool,
+    run_file,
+    run_from_json,
     tally,
 )
 from .contrastive import (
@@ -96,6 +99,9 @@ __all__ = [
     "Tally",
     "build_packet",
     "tally",
+    "pool",
+    "run_file",
+    "run_from_json",
     "load_baseline",
     "Passage",
     "segment",

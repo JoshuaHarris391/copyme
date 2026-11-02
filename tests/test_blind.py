@@ -22,6 +22,9 @@ from copyme.blind import (
     ballot_from_json,
     build_packet,
     packet_from_json,
+    pool,
+    run_file,
+    run_from_json,
     tally,
     wilson_interval,
 )
@@ -505,3 +508,247 @@ def test_the_protocol_minimum_is_the_documented_one():
     assert RELEASE_GATE == 0.70
     assert MIN_READERS == 3
     assert CHANCE == 0.50
+
+
+# -- The run file, and pooling runs ------------------------------------------
+
+
+def finished_run(reader, correct_count, pairs=10, author="London", variant="v2", seed=5):
+    """Generate, judge and score a run, returning its result file.
+
+    Args:
+        reader (str): Reader label.
+        correct_count (int): How many comparisons the reader gets right.
+        pairs (int): How many comparisons the run contains.
+        author (str): Author name.
+        variant (str): Prompt variant.
+        seed (int): Shuffle seed.
+
+    Returns:
+        dict: The run file, as the page offers it for download.
+    """
+    packet, key = build_packet(
+        items(pairs, author=author, variant=variant), packet_id=f"{reader}-run", seed=seed
+    )
+    ballot = ballot_of(packet, key, reader, correct_count=correct_count)
+    return run_file(packet, key, ballot, tally(packet, key, [ballot]), generation={"model": "m"})
+
+
+def test_the_run_file_is_only_written_once_the_run_is_scored():
+    """It holds the answers, so what protects a reader is *when* it is written.
+
+    The packet and the key are separate files because the packet had to travel
+    to a reader without the answers in it. A run generated and judged in one
+    session sends nothing anywhere, so one self-contained file is the right
+    artefact afterwards -- but only afterwards. This asserts the file really is
+    the post-run object: it carries the verdict, which does not exist until the
+    run has been scored.
+
+    Input: a finished three-comparison run.
+    Expected: the answers, the picks and the verdict all present together.
+    """
+    run = finished_run("JH", correct_count=2, pairs=3)
+
+    assert run["kind"] == "copyme.blind.run"
+    assert run["verdict"]
+    assert len(run["comparisons"]) == 3
+    for comparison in run["comparisons"]:
+        assert comparison["real_side"] in ("left", "right")
+        assert comparison["real"] and comparison["generated"]
+
+
+def test_the_run_file_carries_everything_needed_to_re_score_it():
+    """One file replaces four, so it has to be sufficient on its own.
+
+    The packet, key and ballot were three files because they had different
+    homes. Collapsing them into one is only honest if nothing is lost: every
+    comparison keeps its real side, the reader's pick and both passages, so the
+    pick rate can be recomputed from the file rather than trusted.
+
+    Input: a run where the reader got 7 of 10 right.
+    Expected: re-counting the comparisons reproduces the recorded figures.
+    """
+    run = finished_run("JH", correct_count=7, pairs=10)
+
+    judged = [c for c in run["comparisons"] if c["pick"] is not None]
+    recounted = sum(1 for c in judged if c["pick"] == c["real_side"])
+
+    assert len(judged) == run["judgements"] == 10
+    assert recounted == run["correct"] == 7
+    assert run["pick_rate"] == pytest.approx(0.7)
+
+
+def test_a_skipped_comparison_is_recorded_as_neither_right_nor_wrong():
+    """A skip stored as `false` would make every re-score disagree with the run.
+
+    A skipped comparison is absent from the pick rate, not counted against the
+    reader. Writing it as an incorrect answer would be a quiet lie that only
+    shows up when someone recomputes the number from the file and gets a lower
+    one than the file reports.
+
+    Input: a run with one comparison left unjudged.
+    Expected: that comparison's `correct` is null, and the counts exclude it.
+    """
+    packet, key = build_packet(items(3), packet_id="run-1", seed=5)
+    picks = {packet.pairs[0].pair_id: key.real_sides[packet.pairs[0].pair_id]}
+    ballot = Ballot(reader="JH", picks=picks, packet_id="run-1")
+
+    run = run_file(packet, key, ballot, tally(packet, key, [ballot]))
+
+    skipped = [c for c in run["comparisons"] if c["pick"] is None]
+
+    assert len(skipped) == 2
+    assert all(c["correct"] is None for c in skipped)
+    assert run["judgements"] == 1
+
+
+def test_pooling_runs_adds_counts_rather_than_averaging_rates():
+    """Readers who judged different amounts did not contribute equally.
+
+    This is the arithmetic that makes three separate runs into one finding. A
+    reader who judged 2 comparisons and got both right is at 100%, and one who
+    judged 10 and got 5 right is at 50% -- but the pooled rate is 7 of 12, not
+    the 75% that averaging the two percentages would give.
+
+    Input: two runs, 2 of 2 and 5 of 10.
+    Expected: 7 of 12, about 58%, and two readers.
+    """
+    runs = [
+        finished_run("A", correct_count=2, pairs=2),
+        finished_run("B", correct_count=5, pairs=10),
+    ]
+
+    result = pool(runs)
+
+    assert result.judgements == 12
+    assert result.correct == 7
+    assert result.pick_rate == pytest.approx(7 / 12)
+    assert result.readers == 2
+    assert result.pick_rate != pytest.approx(0.75)
+
+
+def test_pooling_three_runs_reaches_the_protocol_minimum():
+    """Three readers is what turns an indicative number into a result.
+
+    One reader's run is labelled indicative however good the pick rate. Pooling
+    three is how the protocol's minimum is met now that every reader generates
+    their own passages, so their packets differ and there is no single key to
+    tally against.
+
+    Input: three runs of 10 comparisons, 7 right each.
+    Expected: 21 of 30 and three readers, with the same verdict the
+    single-packet path gives for the same counts.
+    """
+    runs = [finished_run(f"reader-{n}", correct_count=7) for n in range(3)]
+
+    result = pool(runs)
+
+    assert result.judgements == 30
+    assert result.correct == 21
+    assert result.readers == 3
+    assert result.enough_readers is True
+    # Same counts as the three-reader single-packet test above, so the same
+    # verdict: a point estimate at the gate whose interval reaches past it.
+    assert result.meets_gate is False
+    assert "too few judgements" in result.verdict
+
+
+def test_pooling_keeps_the_per_author_and_per_variant_breakdowns():
+    """Imitation can work for one voice and fail for another, which an aggregate hides.
+
+    The breakdowns are the comparison the protocol actually asks for, so they
+    have to survive pooling -- otherwise running three authors past three
+    readers would produce one number and no way to see which voice failed.
+
+    Input: two runs on different authors, one perfect and one at zero.
+    Expected: both authors present with their own rates, and the aggregate
+    between them.
+    """
+    runs = [
+        finished_run("A", correct_count=10, pairs=10, author="London"),
+        finished_run("B", correct_count=0, pairs=10, author="James"),
+    ]
+
+    result = pool(runs)
+
+    assert result.by_author["London"] == (1.0, 10)
+    assert result.by_author["James"] == (0.0, 10)
+    assert result.pick_rate == pytest.approx(0.5)
+
+
+def test_one_readers_two_runs_are_not_two_readers():
+    """The reader count gates the verdict, so it must not be inflatable.
+
+    Running the test twice yourself doubles the judgements but adds no
+    independent judgement, and the protocol's minimum is about people rather
+    than about volume. Counting distinct labels is what keeps a single
+    enthusiastic reader from reporting a finding.
+
+    Input: two runs with the same reader label.
+    Expected: 20 judgements but one reader, reported as indicative.
+    """
+    runs = [
+        finished_run("JH", correct_count=7, pairs=10, seed=1),
+        finished_run("JH", correct_count=7, pairs=10, seed=2),
+    ]
+
+    result = pool(runs)
+
+    assert result.judgements == 20
+    assert result.readers == 1
+    assert result.enough_readers is False
+    assert "indicative only" in result.verdict
+
+
+def test_pooling_runs_where_everyone_skipped_everything_is_refused():
+    """An empty pool would report a confident 0%, which reads as a perfect score.
+
+    The pick rate is the share of judgements that caught the imitation, so zero
+    judgements divided out to 0% would be the most flattering possible number
+    and the least earned.
+
+    Input: two runs with no judgements between them.
+    Expected: `BlindTestError`, naming why.
+    """
+    with pytest.raises(BlindTestError) as error:
+        pool([{"judgements": 0, "correct": 0}, {"judgements": 0, "correct": 0}])
+
+    assert "nothing to" in str(error.value)
+
+
+def test_uploading_a_packet_where_a_run_file_belongs_says_so():
+    """Files from the old three-file format will not load here, and should say why.
+
+    A user who kept a packet from an earlier run has a reasonable expectation
+    that it is the file to upload. It is not sufficient -- it carries no picks
+    and no answers -- so the message names the file that is.
+
+    Input: a packet's serialised form.
+    Expected: `BlindTestError` naming the run kind.
+    """
+    packet, _ = build_packet(items(2), packet_id="run-1", seed=5)
+
+    with pytest.raises(BlindTestError) as error:
+        run_from_json(json.dumps(packet.to_dict()))
+
+    assert "copyme.blind.run" in str(error.value)
+
+
+def test_a_run_file_survives_a_round_trip_through_json():
+    """The file is written by one session and read by another, so it has to.
+
+    Pooling happens days later, on someone else's machine, from files sent by
+    email. Anything that does not survive `json.dumps` then `json.loads` would
+    fail exactly there and nowhere earlier.
+
+    Input: a run file serialised and parsed back.
+    Expected: `pool` gives the same figures as the run recorded.
+    """
+    run = finished_run("JH", correct_count=7, pairs=10)
+    reloaded = run_from_json(json.dumps(run))
+
+    result = pool([reloaded])
+
+    assert result.judgements == run["judgements"]
+    assert result.correct == run["correct"]
+    assert result.pick_rate == pytest.approx(run["pick_rate"])

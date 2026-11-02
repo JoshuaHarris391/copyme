@@ -30,6 +30,16 @@ types already group the history.
   judged on the whole interval: 30 judgements at a 70% pick rate reaches to roughly 84%,
   so a thin run is reported as too thin to call rather than as a pass.
 
+  A finished run offers **one file**, and it is the whole run: the counts and the
+  verdict, what generated the passages, and every comparison with its real side, the
+  reader's pick and both passages. It replaces the packet, key, ballot and result the
+  run used to offer separately — those were separate files because the packet had to
+  reach a reader without the answers in it, which a run generated and judged in one
+  session never needs. What the separation protected is preserved by *when* the file is
+  written: only once the run is scored. `blind.pool` then adds several runs' counts into
+  one pick rate, which is how the protocol's three readers are reached now that each
+  reader generates their own passages.
+
   Generation reads `COPYME_ANTHROPIC_API_KEY` from the environment — deliberately not
   the SDK's own `ANTHROPIC_API_KEY`, which the CLI still uses: a key set in the shell
   for another tool is not consent for the app to spend it. No key reaches a profile, a
@@ -41,10 +51,10 @@ types already group the history.
 
 - The Blind test page's **Build a packet** and **Rate a packet** modes are replaced by a
   single **Run a blind test** mode, which generates and judges in one session.
-  **Tally the results** is unchanged, and still pools several readers' ballots against
-  one packet. Reaching the protocol's three readers now means three people each running
-  their own test and the pick rates being pooled across runs, since every run generates
-  its own passages.
+  **Tally the results** now takes the one result file each run offers, one per reader,
+  and pools their counts — not a packet, a key and a ballot. Counts are added rather
+  than rates averaged, because a reader who judged three comparisons and one who judged
+  twelve did not contribute equally.
 
 ## 2.0.0
 

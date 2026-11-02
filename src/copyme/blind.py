@@ -59,6 +59,16 @@ Z_95 = 1.959964
 
 SIDES = ("left", "right")
 
+# The ``kind`` of a finished run's result file. One self-contained file per run:
+# the counts, the verdict, and every comparison with its real side and the
+# reader's pick, so the run can be re-scored and audited without the packet,
+# key and ballot being kept as three separate files.
+RUN_KIND = "copyme.blind.run"
+
+# Its format version, so a later change to the shape can be detected rather than
+# silently mis-read.
+RUN_SCHEMA = "copyme/blind/run/1"
+
 
 class BlindTestError(ValueError):
     """A packet, key or ballot that cannot be used as given."""
@@ -493,6 +503,28 @@ def tally(packet, key, ballots):
                 total, right = bucket.get(name, (0, 0))
                 bucket[name] = (total + 1, right + hit)
 
+    return _summarise(judgements, correct, readers, author_counts, variant_counts)
+
+
+def _summarise(judgements, correct, readers, author_counts, variant_counts):
+    """Turn raw counts into a :class:`Tally` with its interval and verdict.
+
+    Shared by :func:`tally`, which counts ballots against one packet, and
+    :func:`pool`, which adds up runs that each had their own packet. The
+    arithmetic has to be identical: a pooled figure and a single-packet figure
+    end up in the same table, and a difference between them would have to be
+    explained to a reader of that table.
+
+    Args:
+        judgements (int): Picks counted.
+        correct (int): Picks that found the real author.
+        readers (set): Distinct reader labels.
+        author_counts (dict): Author to ``(judgements, correct)``.
+        variant_counts (dict): Variant to ``(judgements, correct)``.
+
+    Returns:
+        Tally: The result.
+    """
     pick_rate = correct / judgements if judgements else 0.0
     interval = wilson_interval(correct, judgements)
     enough_readers = len(readers) >= MIN_READERS
@@ -516,6 +548,167 @@ def tally(packet, key, ballots):
             judgements, pick_rate, interval, len(readers), enough_readers, indistinguishable
         ),
     )
+
+
+def run_file(packet, key, ballot, result, generation=None):
+    """Assemble the one self-contained file a finished run leaves behind.
+
+    Previously a run produced four files -- packet, key, ballot and result --
+    because the packet had to travel to readers without the answers in it. A run
+    that is generated and judged in one session never sends anything anywhere,
+    so the separation buys nothing afterwards and costs the user three downloads
+    to keep together.
+
+    What the separation protected is preserved by *when* this is written: it is
+    built only once the run is finished and scored, so nothing here can reach a
+    reader mid-run.
+
+    Everything needed to re-score the run is included, which is why it can
+    replace the other three: each comparison carries its real side, the reader's
+    pick, and both passages.
+
+    Args:
+        packet (Packet): The packet judged.
+        key (AnswerKey): Its answer key.
+        ballot (Ballot): The reader's picks.
+        result (Tally): The scored result.
+        generation (dict, optional): What produced the passages -- the model,
+            the size, how many rounds were asked for and built.
+
+    Returns:
+        dict: The run file, ready for :func:`json.dumps`.
+    """
+    comparisons = []
+    for pair in packet.pairs:
+        real_side = key.real_sides.get(pair.pair_id)
+        pick = ballot.picks.get(pair.pair_id)
+        other = "right" if real_side == "left" else "left"
+        comparisons.append(
+            {
+                "pair_id": pair.pair_id,
+                "author": pair.author,
+                "variant": pair.variant,
+                "real_side": real_side,
+                "pick": pick,
+                # Null rather than false for a skipped comparison: a skip is not
+                # a wrong answer, and storing it as one would make every
+                # re-score of this file disagree with the run's own figures.
+                "correct": None if pick is None else pick == real_side,
+                "real": pair.side(real_side) if real_side else None,
+                "generated": pair.side(other) if real_side else None,
+            }
+        )
+
+    return {
+        "kind": RUN_KIND,
+        "schema": RUN_SCHEMA,
+        "packet_id": packet.packet_id,
+        "reader": ballot.reader,
+        "seed": key.seed,
+        "judgements": result.judgements,
+        "correct": result.correct,
+        "pick_rate": result.pick_rate,
+        "interval": list(result.interval),
+        "readers": result.readers,
+        "enough_readers": result.enough_readers,
+        "meets_gate": result.meets_gate,
+        "indistinguishable": result.indistinguishable,
+        "verdict": result.verdict,
+        # Counts, not rates. Pooling needs to add these up, and a rate cannot be
+        # added to another rate without the count it was taken over.
+        "by_author": {
+            name: {"judgements": count, "correct": round(rate * count)}
+            for name, (rate, count) in result.by_author.items()
+        },
+        "by_variant": {
+            name: {"judgements": count, "correct": round(rate * count)}
+            for name, (rate, count) in result.by_variant.items()
+        },
+        "generation": dict(generation or {}),
+        "comparisons": comparisons,
+    }
+
+
+def pool(runs):
+    """Combine several finished runs into one tally.
+
+    This is how the protocol's three readers are reached now that each reader
+    generates their own passages. Their packets differ, so there is no single
+    key to tally against -- but the counts add up, which is all a pick rate and
+    a Wilson interval need.
+
+    Pooling counts rather than averaging rates is deliberate. A reader who
+    judged 3 comparisons and one who judged 12 did not contribute equally, and
+    averaging their two percentages would pretend they had.
+
+    Args:
+        runs (list[dict]): Parsed run files, as :func:`run_from_json` returns.
+
+    Returns:
+        Tally: The pooled result. ``readers`` counts distinct reader labels, so
+            one person's two runs do not read as two readers.
+
+    Raises:
+        BlindTestError: If no run carried any judgements, which would otherwise
+            pool to a confident-looking 0%.
+    """
+    judgements = 0
+    correct = 0
+    readers = set()
+    author_counts = {}
+    variant_counts = {}
+
+    for position, run in enumerate(runs, start=1):
+        judgements += int(run.get("judgements", 0))
+        correct += int(run.get("correct", 0))
+        # An unnamed run still counts as its own reader: the alternative is for
+        # several anonymous runs to collapse into one, which would understate
+        # the reader count the verdict is gated on.
+        readers.add(run.get("reader") or f"run-{position}")
+
+        for bucket, source in (
+            (author_counts, run.get("by_author")),
+            (variant_counts, run.get("by_variant")),
+        ):
+            for name, counts in (source or {}).items():
+                total, right = bucket.get(name, (0, 0))
+                bucket[name] = (
+                    total + int(counts.get("judgements", 0)),
+                    right + int(counts.get("correct", 0)),
+                )
+
+    if judgements <= 0:
+        raise BlindTestError(
+            "None of these runs recorded a judgement, so there is nothing to "
+            "pool. A run whose every card was skipped has no pick rate."
+        )
+
+    return _summarise(judgements, correct, readers, author_counts, variant_counts)
+
+
+def run_from_json(text):
+    """Parse a finished run's result file.
+
+    Args:
+        text (str | bytes): The file contents.
+
+    Returns:
+        dict: The run.
+
+    Raises:
+        BlindTestError: If the text is not JSON, or not a run file. The message
+            distinguishes the old three-file format, because a packet or a
+            ballot kept from an earlier run will not load here.
+    """
+    payload = _parse(text, "run")
+    if payload.get("kind") != RUN_KIND:
+        raise BlindTestError(
+            f"This file is not a blind-test run. Expected a file whose 'kind' "
+            f"is '{RUN_KIND}' -- the single result file a finished run offers "
+            f"for download. A packet, answer key or ballot on its own is not "
+            f"enough to pool."
+        )
+    return payload
 
 
 def _slug(text):

@@ -175,23 +175,40 @@ What the page cannot supply is the readers. The protocol asks for three or more 
 author who know that author's writing, and a run with fewer is labelled indicative
 rather than reported as a result. See [evals/](evals/).
 
-Reaching three means three people each running their own test. Each run generates its
-own passages, so their packets differ and their ballots cannot be tallied against one
-key — the pick rates have to be pooled across runs, with each run's own result file
-kept. **Tally the results** still combines several ballots against a *single* packet,
-which is what to use when the same comparisons are judged by more than one person, or to
-re-score a run from its files.
+Reaching three means three people each running their own test, then pooling their result
+files under **Tally the results**.
 
 ### What a run leaves behind
 
-Four files, the same four a mailed-out run produces:
+One file: `<id>-<reader>-result.json`. It is the whole run — the pick rate and its
+interval, what generated the passages, and every comparison with its real side, the
+reader's pick and both passages. `docs/evals/` takes one per run.
 
-| File | What it is for |
-|---|---|
-| `<id>-result.json` | The number, its interval and the run's parameters. One per run in [evals/](evals/) |
-| `<id>-packet.json` | The comparisons, with no record of which side is real |
-| `<id>-key.json` | Which side was real, plus the shuffle seed |
-| `<id>-ballot-<reader>.json` | One reader's picks |
+It used to be four: a packet, an answer key, a ballot and a result. Those were separate
+because the packet had to reach a reader without the answers in it. A run that is
+generated and judged in one session sends nothing anywhere, so afterwards the separation
+cost three downloads and bought nothing. What it protected is preserved by *when* the
+file is written: only once the run is finished and scored, so nothing in it can reach a
+reader mid-run.
+
+Because it carries each comparison's real side and pick, the pick rate can be recomputed
+from the file rather than taken on trust.
+
+### Pooling several readers
+
+**Tally the results** takes those result files — one per run — and adds up their counts.
+Counts, not percentages: a reader who judged 3 comparisons and one who judged 12 did not
+contribute equally, and averaging their two rates would pretend they had. The per-author
+and per-variant breakdowns survive pooling, and the reader count is of distinct labels,
+so running the test twice yourself does not read as two readers.
+
+It also lists each run's model and prompt size, because pooling runs that used different
+models or sizes produces a number about no single pairing. The release gate is set on
+Standard.
+
+The library functions are `blind.run_file`, `blind.run_from_json` and `blind.pool`.
+`blind.tally` is still what scores a single packet, and `Packet`, `AnswerKey` and
+`Ballot` remain the in-session objects a run is built from.
 
 ### The API key
 

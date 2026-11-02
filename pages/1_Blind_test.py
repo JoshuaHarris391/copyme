@@ -41,9 +41,9 @@ from copyme.blind import (
     RELEASE_GATE,
     Ballot,
     BlindTestError,
-    ballot_from_json,
-    key_from_json,
-    packet_from_json,
+    pool,
+    run_file,
+    run_from_json,
     tally,
 )
 from copyme.generate import DEFAULT_NOTE, build_live_run, held_out
@@ -139,33 +139,6 @@ def load_profile(text):
         return Profile.from_dict(payload), None
     except (KeyError, TypeError, ValueError) as exc:
         return None, f"This profile could not be read: {exc}"
-
-
-def result_payload(packet, result, record):
-    """Assemble the one file per run that ``docs/evals/`` takes.
-
-    Args:
-        packet (copyme.blind.Packet): The packet judged.
-        result (copyme.blind.Tally): The scored result.
-        record (dict): What the generation run did.
-
-    Returns:
-        dict: The result file.
-    """
-    return {
-        "packet_id": packet.packet_id,
-        "judgements": result.judgements,
-        "correct": result.correct,
-        "pick_rate": result.pick_rate,
-        "interval": list(result.interval),
-        "readers": result.readers,
-        "enough_readers": result.enough_readers,
-        "meets_gate": result.meets_gate,
-        "by_author": {k: list(v) for k, v in result.by_author.items()},
-        "by_variant": {k: list(v) for k, v in result.by_variant.items()},
-        "verdict": result.verdict,
-        "run": record,
-    }
 
 
 def render_result(result):
@@ -676,10 +649,8 @@ if mode == "Run a blind test":
             st.caption(
                 f"This is one reader, and the protocol asks for at least "
                 f"{MIN_READERS}. Reaching that means other readers running "
-                f"their own tests: each run generates its own passages, so "
-                f"their packets differ and their ballots cannot be tallied "
-                f"against this key. Pool the pick rates across runs, and record "
-                f"each run's own result file."
+                f"their own tests, then pooling the result files under **Tally "
+                f"the results**."
             )
 
             st.subheader("What each card was")
@@ -709,35 +680,19 @@ if mode == "Run a blind test":
 
             st.subheader("Keep the run")
             st.caption(
-                "`docs/evals/` takes one result file per run, and a failing "
-                "number is still worth publishing. The packet and key are the "
-                "audit trail: they let anyone re-tally this run, or send the "
-                "same comparisons to another reader."
+                "One file, and it is the whole run: the pick rate, its "
+                "interval, what generated the passages, and every comparison "
+                "with its real side and your pick. `docs/evals/` takes one per "
+                "run, and a failing number is still worth publishing. Bring "
+                "several of these back here under **Tally the results** to "
+                "pool them across readers."
             )
-            first_column, second_column = st.columns(2)
-            with first_column:
-                download_json(
-                    "⬇️ Result",
-                    result_payload(packet, result, record),
-                    f"{packet.packet_id}-result.json",
-                    type="primary",
-                )
-                download_json(
-                    "⬇️ Packet — no answers in it",
-                    packet.to_dict(),
-                    f"{packet.packet_id}-packet.json",
-                )
-            with second_column:
-                download_json(
-                    "⬇️ My ballot",
-                    ballot.to_dict(),
-                    f"{packet.packet_id}-ballot-{ballot.reader.replace(' ', '-')}.json",
-                )
-                download_json(
-                    "⬇️ Answer key — keep this",
-                    key.to_dict(),
-                    f"{packet.packet_id}-key.json",
-                )
+            download_json(
+                "⬇️ Download the result",
+                run_file(packet, key, ballot, result, generation=record),
+                f"{packet.packet_id}-{ballot.reader.replace(' ', '-')}-result.json",
+                type="primary",
+            )
 
             with st.expander("What the generation did"):
                 st.json(record)
@@ -748,46 +703,61 @@ if mode == "Run a blind test":
 # --- Tally ------------------------------------------------------------------
 
 else:
-    st.subheader("Combine the key with the ballots")
+    st.subheader("Pool several readers' runs into one number")
     st.caption(
-        "Use this to pool several readers against one packet, or to re-score a "
-        "run from its files."
+        "One reader is indicative; the protocol wants three or more per author. "
+        "Each of them runs their own test and sends you the result file it "
+        "offers. Drop them all in here."
     )
-    packet_column, key_column = st.columns(2)
-    with packet_column:
-        packet_file = st.file_uploader("Packet", type="json", key="tally_packet")
-    with key_column:
-        key_file = st.file_uploader("Answer key", type="json", key="tally_key")
-    ballot_files = st.file_uploader(
-        "Ballots — one per reader",
+    run_files = st.file_uploader(
+        "Result files — one per run",
         type="json",
         accept_multiple_files=True,
-        key="tally_ballots",
+        key="tally_runs",
     )
 
-    if not (packet_file and key_file and ballot_files):
+    if not run_files:
         st.caption(
-            f"All three are needed. The protocol asks for at least "
+            f"Nothing uploaded yet. The protocol asks for at least "
             f"{MIN_READERS} readers; with fewer, the result is reported as "
             f"indicative rather than as a finding."
         )
     else:
         try:
-            packet = packet_from_json(packet_file.getvalue())
-            key = key_from_json(key_file.getvalue())
-            ballots = [ballot_from_json(handle.getvalue()) for handle in ballot_files]
-            result = tally(packet, key, ballots)
+            runs = [run_from_json(handle.getvalue()) for handle in run_files]
+            result = pool(runs)
         except BlindTestError as exc:
             st.error(str(exc))
         else:
             render_result(result)
 
-            download_json(
-                "⬇️ Download the result",
-                result_payload(packet, result, {}),
-                f"{packet.packet_id}-result.json",
+            st.caption(
+                f"Pooled from {len(runs)} run(s). Counts are added rather than "
+                f"percentages averaged: a reader who judged three comparisons "
+                f"and one who judged twelve did not contribute equally, and "
+                f"averaging their rates would pretend they had."
+            )
+
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "reader": run.get("reader") or f"run-{position}",
+                            "author": run.get("generation", {}).get("author", ""),
+                            "variant": run.get("generation", {}).get("variant", ""),
+                            "model": run.get("generation", {}).get("model", ""),
+                            "size": run.get("generation", {}).get("size", ""),
+                            "judgements": run.get("judgements", 0),
+                            "correct": run.get("correct", 0),
+                        }
+                        for position, run in enumerate(runs, start=1)
+                    ]
+                ),
+                hide_index=True,
             )
             st.caption(
-                "`docs/evals/` takes one file per run. This is that file, and "
-                "a failing number is still worth publishing."
+                "Check the model and size columns before believing the "
+                "aggregate: pooling runs that used different models, or "
+                "different prompt sizes, produces a number about no single "
+                "pairing. The release gate is set on Standard."
             )

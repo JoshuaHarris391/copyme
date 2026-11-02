@@ -70,9 +70,10 @@ confidence interval the number is meaningless without — see
 passages used to be done by hand and pasted in, which is what kept this folder empty.
 
 It still does not supply the readers, which is now the only reason this is unrun. The
-protocol asks for three or more per author, and each of them runs their own test:
-because every run generates its own passages, their packets differ and their pick rates
-are pooled across runs rather than tallied against one key.
+protocol asks for three or more per author, and each of them runs their own test. A
+finished run offers one self-contained result file; dropping those files into **Tally
+the results** pools their counts into one pick rate, one interval and one reader count.
+That is the file this folder takes, one per run.
 
 Steps 1 to 3 and step 5 remain scriptable but unscripted.
 

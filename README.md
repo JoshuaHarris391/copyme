@@ -160,6 +160,11 @@ Four properties worth knowing before trusting a number out of it:
   has a 95% interval of roughly 52% to 84%, so the gate is judged on the whole interval
   and a thin run is reported as too thin to call.
 
+A finished run offers **one file**, which is the whole run: the pick rate, its interval,
+what generated the passages, and every comparison with its real side and your pick. Drop
+several of those into **Tally the results** and their counts are pooled into one figure
+across readers.
+
 A lower pick rate is better: 50% is a coin flip and the ceiling of imitation. The page
 supplies everything except the readers — the protocol wants three or more per author,
 each running their own test — which is why the evaluation is still unrun.

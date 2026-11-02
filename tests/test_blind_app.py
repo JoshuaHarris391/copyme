@@ -456,12 +456,17 @@ def test_the_result_is_scored_through_the_same_tally_as_a_mailed_run(profile_jso
     assert shown.value == f"{direct.pick_rate:.0%}"
 
 
-def test_the_run_offers_its_four_files(profile_json):
-    """A run that cannot be filed may as well not have happened.
+def test_the_run_offers_exactly_one_file(profile_json):
+    """One run, one download. Four files was clutter nobody kept together.
 
-    `docs/evals/` takes one result file per run. The packet and key are the
-    audit trail that lets anyone else re-tally it, and the ballot is what a
-    reader would send to an organiser pooling several runs.
+    The packet, key and ballot were separate files because the packet had to
+    reach a reader without the answers in it. A run generated and judged in one
+    session sends nothing anywhere, so afterwards the separation costs the user
+    three downloads and buys nothing. `docs/evals/` takes one file per run, and
+    this is that file.
+
+    Input: a finished three-card run.
+    Expected: a single download button, and it is the result.
     """
     at = _started_run(profile_json)
     at.radio[1].set_value("Left").run()
@@ -471,10 +476,44 @@ def test_the_run_offers_its_four_files(profile_json):
 
     labels = [button.label for button in at.get("download_button")]
 
-    assert any("Result" in label for label in labels)
-    assert any("Packet" in label for label in labels)
-    assert any("ballot" in label.lower() for label in labels)
-    assert any("Answer key" in label for label in labels)
+    assert len(labels) == 1, f"expected one download, got {labels}"
+    assert "result" in labels[0].lower()
+
+
+def test_the_one_file_is_enough_to_pool_the_run_with_others(profile_json):
+    """The single file has to be sufficient, or collapsing four into one lost something.
+
+    Pooling is how the protocol's three readers are reached, and it happens
+    later, elsewhere, from files sent by email. So the file a run offers must
+    load back and re-score to the figures the run reported.
+
+    Input: the run's own state, through the same assembly the download uses.
+    Expected: pooling the reloaded file reproduces the pick rate on screen.
+    """
+    from copyme.blind import pool, run_file, run_from_json, tally
+
+    at = _started_run(profile_json)
+    at.radio[1].set_value("Left").run()
+    at = _click(at, "Next →")
+    at = _click(at, "Next →")
+    at = _click(at, "Finish and score")
+
+    run = at.session_state["blind_run"]
+    ballot = Ballot(
+        reader=run["reader"], picks=run["picks"], packet_id=run["packet"].packet_id
+    )
+    served = run_file(
+        run["packet"],
+        run["key"],
+        ballot,
+        tally(run["packet"], run["key"], [ballot]),
+        generation=run["record"],
+    )
+
+    pooled = pool([run_from_json(json.dumps(served))])
+    shown = next(metric for metric in at.metric if metric.label == "Pick rate")
+
+    assert shown.value == f"{pooled.pick_rate:.0%}"
 
 
 def test_the_packet_the_page_serves_contains_no_answers():
@@ -532,11 +571,12 @@ def test_a_missing_api_key_names_the_variable_rather_than_failing(
 # --- Tally mode -------------------------------------------------------------
 
 
-def test_tally_mode_asks_for_the_packet_the_key_and_the_ballots():
+def test_tally_mode_asks_only_for_the_run_files():
     """Pooling several readers is still how a result becomes a finding.
 
-    One reader is indicative; the protocol wants three. Tally mode is how their
-    ballots are combined, and it needs all three kinds of file.
+    One reader is indicative; the protocol wants three. Each of them now runs
+    their own test and sends one result file, so tally mode asks for those and
+    nothing else -- no packet, no key, no separate ballot.
     """
     at = _app()
     at.radio[0].set_value("Tally the results").run()
@@ -545,6 +585,5 @@ def test_tally_mode_asks_for_the_packet_the_key_and_the_ballots():
 
     labels = [uploader.label for uploader in at.get("file_uploader")]
 
-    assert "Packet" in labels
-    assert "Answer key" in labels
-    assert any("Ballots" in label for label in labels)
+    assert len(labels) == 1
+    assert "Result files" in labels[0]
